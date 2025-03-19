@@ -1,4 +1,4 @@
-##UCB1 Algorithm
+## UCB1 Algorithm
 
 Initialization: Play each machine once.
 Loop:
@@ -7,7 +7,7 @@ Loop:
     Play machine j.
     Update n_j and X̄_j.
 
-##UCB2 Algorithm
+## UCB2 Algorithm
 
 Parameters: 0 < α < 1
 Initialization: r_j = 0, play each machine once.
@@ -18,7 +18,7 @@ Loop:
     2. Play machine j τ(r_j + 1) - τ(r_j) times.
     3. r_j += 1.
 
-##$\epsilon_n$-Greedy Algorithm
+## $\epsilon_n$-Greedy Algorithm
 
 Parameters: c > 0, 0 < d < 1
 Define ε_n = min{1, cK/(d²n)}
@@ -26,7 +26,7 @@ Loop:
     1. Select the machine z with the highest current average reward.
     2. Play z with probability 1 - ε_n; otherwise, randomly select a machine.
 
-##UCB1-Normal Algorithm
+## UCB1-Normal Algorithm
 
 Initialization: Play each machine at least ⌈8 log n⌉ times.
 Loop:
