@@ -1,7 +1,5 @@
 ## UCB1 Algorithm
 
-## UCB1 Algorithm
-
 **Initialization:**  
 - Play each machine once.
 
@@ -51,7 +49,7 @@
 
 **Define:**  
   
-$$ \varepsilon_n = \min\left\{1, \frac{cK}{d^2 n}\right\} $$
+$$ \varepsilon_n = \min\{1, \frac{cK}{d^2 n}\} $$
 
 **Loop:**  
 1. Identify the machine $z$ with the highest current average reward.
