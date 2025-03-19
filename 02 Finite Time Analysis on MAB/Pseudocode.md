@@ -6,7 +6,9 @@
 **Loop:**  
 - Compute for each machine $j$ the Upper Confidence Bound:
   
-  $$ \text{UCB}_j = \bar{X}_j + \sqrt{\frac{2 \ln n}{n_j}} $$
+  $$
+  \text{UCB}_j = \bar{X}_j + \sqrt{\frac{2 \ln n}{n_j}}
+  $$
 
 - Select the machine $j$ that maximizes $\text{UCB}_j$.
 - Play machine $j$.
