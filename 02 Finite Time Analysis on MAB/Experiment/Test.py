@@ -7,47 +7,62 @@ import UCB_Normal
 import Epsilon_Greedy
 
 # binary armed bandit
-environment = System.System(2, [0.9, 0.6])
-def plot(environment, optimal=0):
-    ucb = UCB_Tuned.UCB_Tuned(environment)
-    X = []
+def collect(system:System.System, algorithm, Total_steps=5, *args, **kwargs):
+    '''
+    Collects the result of the algorithm on the system
+    :return: tuple, with the first element being the best arm played percentage and the second element being the regret
+    '''
+    if algorithm == "UCB":
+        algorithm = UCB_Tuned.UCB_Tuned(system)
+    elif algorithm == "UCB_2":
+        algorithm = UCB_2.UCB_2(system)
+    elif algorithm == "UCB_Normal":
+        algorithm = UCB_Normal.UCB_NORMAL(system)
+    elif algorithm == "Epsilon_Greedy":
+        algorithm = Epsilon_Greedy.Epsilon_Greedy(system, 0.15)
+    else:
+        raise ValueError("Invalid algorithm name")
+    X = np.linspace(0, Total_steps, 1000)
     Y = []
-    for i in np.linspace(np.log10(2), 3, 1000):
-        X.append(i)
-        num = int(np.pow(10, i))
-        Y.append(ucb.run(num, process=False, result=False, optimal=optimal)[1])
-    ucb = UCB_Normal.UCB_NORMAL(environment)
-    plt.plot(X, Y, label="UCB_Tuned")
-    X = []
-    Y = []
-    for i in np.linspace(np.log10(2), 3, 1000):
-        X.append(i)
-        num = int(np.pow(10, i))
-        Y.append(ucb.run(num, process=False, result=False, optimal=optimal)[1])
-    plt.plot(X, Y, label="UCB_Normal")
-    ep = Epsilon_Greedy.Epsilon_Greedy(environment, 0.1, 0.1)
-    X = []
-    Y = []
-    for i in np.linspace(np.log10(2), 3, 1000):
-        X.append(i)
-        num = int(np.pow(10, i))
-        Y.append(ep.run(num, process=False, result=False, optimal=optimal)[1])
-    plt.plot(X, Y, label="Epsilon_Greedy")
-    ucb = UCB_2.UCB_2(environment, 0.01)
-    X = []
-    Y = []
-    for i in np.linspace(np.log10(2), 3, 1000):
-        X.append(i)
-        num = int(np.pow(10, i))
-        Y.append(ucb.run(num, process=False, result=False, optimal=optimal)[1])
+    Z = []
+    for i in X:
+        times = int(np.pow(10,i))
+        y,z = algorithm.run(times, process=False, result=False)[1:]
+        Y.append(y)
+        Z.append(z)
+    return Y,Z
+
+
+    
+
+
+def plot(system:System.System, Total_steps = 5):
+    plt.grid()
+    X = np.linspace(0, Total_steps, 1000)
+    Y,Z1 = collect(system, "UCB", Total_steps)
+    plt.plot(X, Y, label="UCB")
+    Y,Z2 = collect(system, "UCB_2", Total_steps)
     plt.plot(X, Y, label="UCB_2")
+    Y,Z3 = collect(system, "UCB_Normal", Total_steps)
+    plt.plot(X, Y, label="UCB_Normal")
+    Y,Z4 = collect(system, "Epsilon_Greedy", Total_steps)
+    plt.plot(X, Y, label="Epsilon_Greedy")
+    plt.legend()
+    plt.show()
+    plt.grid()
+    plt.plot(X, Z1, label="UCB")
+    plt.plot(X, Z2, label="UCB_2")
+    plt.plot(X, Z3, label="UCB_Normal")
+    plt.plot(X, Z4, label="Epsilon_Greedy")
     plt.legend()
     plt.show()
 
-plot(environment, optimal=1)
-plot(System.System(2,[0.9, 0.8]), optimal=1)
-plot(System.System(2,[0.55, 0.45]), optimal=1)
-plot(System.System(10, [0.9, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6]), optimal=1)
-plot(System.System(10, [0.9, 0.8, 0.8, 0.8, 0.7, 0.7, 0.7, 0.6, 0.6, 0.6]), optimal=1)
-plot(System.System(10, [0.9, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8]),  optimal=1)
-plot(System.System(10, [0.55, 0.45, 0.45, 0.45, 0.45, 0.45, 0.45, 0.45, 0.45, 0.45]), optimal=1)
+
+
+plot(System.System(2, [0.9, 0.6]))
+plot(System.System(2,[0.9, 0.8]))
+plot(System.System(2,[0.55, 0.45]))
+plot(System.System(10, [0.9, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6]))
+plot(System.System(10, [0.9, 0.8, 0.8, 0.8, 0.7, 0.7, 0.7, 0.6, 0.6, 0.6]))
+plot(System.System(10, [0.9, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8, 0.8]))
+plot(System.System(10, [0.55, 0.45, 0.45, 0.45, 0.45, 0.45, 0.45, 0.45, 0.45, 0.45]))
