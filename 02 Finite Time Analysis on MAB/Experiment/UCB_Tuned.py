@@ -11,13 +11,16 @@ class UCB_Tuned(System.UCB):
         self.ucb = np.inf*np.ones(self.n)
         self.counts = np.zeros(self.n)
         self.reward_square = np.zeros(self.n)
+        self.optimal = np.argmax(self.p)
+        self.regret = 0
     
-    def simulate(self, arm, process=True):
+    def simulate(self, arm, process=False):
         reward = self.environment.simulate(arm)
         self.reward_square[arm] += reward**2
         self.rewards[arm] += reward
         self.counts[arm] += 1
         self.ucb[arm] = self.rewards[arm]/self.counts[arm] + self.UCB(arm)
+        self.regret += self.p[self.optimal] - self.p[arm]
         if process is True:
             print("Arm:", arm+1, "Reward:", reward)
 
@@ -32,4 +35,4 @@ if __name__=='__main__':
     p = [0.2, 0.4, 0.6, 0.8, 0.9, 0.1, 0.3, 0.5, 0.7, 0.87]
     system = System.System(n, p)
     ucb = UCB_Tuned(system)
-    ucb.run(10000, process=False) # 5
+    print(ucb.run(1000, process=False)) # 5
