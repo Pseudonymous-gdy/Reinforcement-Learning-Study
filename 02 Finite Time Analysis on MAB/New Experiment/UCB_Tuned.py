@@ -26,7 +26,8 @@ class UCB_Tuned(System.UCB):
                 self.reward_square[arm] += reward ** 2
                 self.rewards[arm] += reward
                 self.counts[arm] += 1
-                self.ucb[arm] = self.rewards[arm] / self.counts[arm] + self.UCB(arm)
+                for arm1 in range(self.n):
+                    self.ucb[arm1] = self.rewards[arm1] / self.counts[arm1] + self.UCB(arm1)
                 self.regret += table[self.optimal][time] - reward
             regret_lst += self.regret
             most_arm_played += self.counts[self.optimal]/times

@@ -55,14 +55,15 @@ class UCB:
                 reward = table[arm][time]
                 self.rewards[arm] += reward
                 self.counts[arm] += 1
-                self.ucb[arm] = self.rewards[arm] / self.counts[arm] + self.UCB(arm)
+                for arm1 in range(self.n):
+                    self.ucb[arm] = self.rewards[arm] / self.counts[arm] + self.UCB(arm)
                 self.regret += table[self.optimal][time] - reward
             regret_lst += self.regret
             most_arm_played += self.counts[self.optimal]/times
-            if seed == 99:
-                a = self.rewards/self.counts
-                print(a)
-                print(np.argmax(a))
+            # if seed == 99:
+            #     a = self.rewards/self.counts
+            #     print(a)
+            #     print(np.argmax(a))
             self.rewards = np.zeros(self.n)
             self.ucb = np.inf * np.ones(self.n)
             self.counts = np.zeros(self.n)
