@@ -102,7 +102,7 @@ if __name__ == "__main__":
 
     alphas   = [1e-1, 1e-2, 1e-3, 1e-4]     # 0.1 → 0.0001
     horizon  = 100_000                      # 10⁵ plays
-    runs     = 20                           # Monte‑Carlo repetitions
+    runs     = 5                           # Monte‑Carlo repetitions
                                              # (increase if you need smoother curves)
 
     env = System.System(n_arms, p)
@@ -117,11 +117,11 @@ if __name__ == "__main__":
         Y1 = []
         Y2 = []
         for i in range(len(X)):
-            a, b = model.simulate(int(10 ** X[i]))
+            a, b = model.simulate(int(10 ** X[i]), runs)
             Y1.append(a)
             Y2.append(b)
             print('\r', '*' * int(20 * (10 ** X[i]) / 10000) + '-' * (20 - int(20 * (10 ** X[i]) / 10000)), '|',
-                  f'Times:{int(10 ** X[i])}/100000', f'Regret: {a}', f'Most arm played: {b}', end='')
+                  f'Times:{int(10 ** X[i])}/100000', f'Regret: {a}', f'Most arm played: {b}', f"alpha: {alpha}", end='')
         regret_paths[alpha] = Y1
         opt_pull_paths[alpha] = Y2
 

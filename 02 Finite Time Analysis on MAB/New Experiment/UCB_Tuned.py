@@ -15,10 +15,10 @@ class UCB_Tuned(System.UCB):
         self.optimal = np.argmax(self.p)
         self.regret = 0
 
-    def simulate(self, times):
+    def simulate(self, times, runs=100):
         regret_lst = 0
         most_arm_played = 0
-        for seed in range(100):
+        for seed in range(runs):
             table = self.environment.simulate(times=times, seed=seed)
             for time in range(times):
                 arm = self.select_arm()
@@ -40,7 +40,7 @@ class UCB_Tuned(System.UCB):
             self.counts = np.zeros(self.n)
             self.reward_square = np.zeros(self.n)
             self.regret = 0
-        return regret_lst/100, most_arm_played/100
+        return regret_lst/runs, most_arm_played/runs
 
     def UCB(self, arm):
         # override the previous UCB function
