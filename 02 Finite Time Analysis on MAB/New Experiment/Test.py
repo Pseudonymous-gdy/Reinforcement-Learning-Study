@@ -22,7 +22,7 @@ envs = [
 X      = np.linspace(1, 5, 100)              # 10¹ … 10⁵ plays
 horizon_max = int(10 ** X[-1])
 plays   = (10 ** X).astype(int)
-runs    = 20                                 # Monte‑Carlo averages
+runs    = 100                              # Monte‑Carlo averages
 
 # ---------------- helper to gather a path -----------------
 def get_path(agent, horizon=horizon_max):
@@ -44,7 +44,7 @@ for idx, env in enumerate(envs, 1):
 
     algos = {
         "UCB‑Tuned":      UCB_Tuned.UCB_Tuned(env),
-        "UCB‑2 α=0.001":  UCB_2.UCB2(env, alpha=0.001),
+        "UCB‑2 α=0.001":  UCB_2.UCB2(env, alpha=0.01),
         "ε‑Greedy c=0.1": Epsilon_Greedy.EpsilonGreedy(env, c=0.1),
         "UCB‑Normal":     UCB_Normal.UCBNormal(env)
     }

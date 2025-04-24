@@ -15,7 +15,7 @@ class System:
         rng = np.random.default_rng(seed)
         samples = []
         for i in range(self.n):
-            sample = rng.binomial(n=1, p=self.p[i], size=times)
+            sample = rng.binomial(n=1, p=self.p[i], size=times + 10)
             samples.append(sample)
         return samples
 
