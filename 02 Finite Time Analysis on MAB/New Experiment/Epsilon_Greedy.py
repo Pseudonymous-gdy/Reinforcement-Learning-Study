@@ -25,7 +25,9 @@ class EpsilonGreedy:
         self.p   = np.asarray(environment.p, dtype=float)
 
         # gap Δ
-        best, second_best = np.partition(self.p, -2)[-2:]
+        m = self.p.copy()
+        m = np.sort(m)
+        best, second_best = m[-1], m[-2]
         self.delta = max(best - second_best, 1e-12)
 
         self.c        = c
@@ -42,7 +44,7 @@ class EpsilonGreedy:
     def _reset(self):
         self.rewards = np.zeros(self.n)
         self.counts  = np.zeros(self.n, dtype=int)
-        self.t       = 0
+        self.t       = 1
         self.regret  = 0.0
 
     def _epsilon(self) -> float:
@@ -123,7 +125,7 @@ if __name__ == "__main__":
 
     c_list   = [0.3, 0.2, 0.15, 0.1, 0.05]   # exploration constants
     horizon  = 100_000                  # up to 10⁵ plays
-    runs     = 20                       # Monte‑Carlo repetitions
+    runs     = 100                      # Monte‑Carlo repetitions
 
     # X‑axis: log₁₀(time)
     X = np.linspace(1, 5, 100)          # 10¹ … 10⁵
