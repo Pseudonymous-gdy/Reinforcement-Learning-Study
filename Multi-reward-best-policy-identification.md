@@ -11,9 +11,9 @@ Designing *one* good reward is already tricky in reinforcement learning (RL); ma
 * **Reward set:** a *known, finite* collection $R=\{r_i:\mathcal S\times\mathcal A\to[0,1]\}$.&#x20;
 * **Objective (δ‑PC):** Design an algorithm that stops in finite time $\tau$ and outputs a policy $\hat\pi_{\,\tau,r}$ such that
 
-  $$
+  \[
      \Pr\bigl[\forall r\in R,\; \hat\pi_{\,\tau,r}\text{ is optimal for }r\bigr]\;\ge 1-\delta .
-  $$
+  \]
 
   The goal is to **minimise $\mathbb E[\tau]$**.&#x20;
 
@@ -32,16 +32,16 @@ Designing *one* good reward is already tricky in reinforcement learning (RL); ma
 
 * **Instance‑specific lower bound (Theorem 3.1).** Any δ‑PC algorithm needs
 
-  $$
+  \[
      \displaystyle\mathbb E[\tau]\;\ge\;\frac{\log(1/\delta)}{T^\star(M)} ,
-  $$
+  \]
 
   where $T^\star(M)$ is the solution of a zero‑sum game between the learner’s visitation frequencies $\omega$ and an adversarial “confusing” MDP $M'$.&#x20;
 * **Asymptotic optimality of MR‑NaS.** With an appropriate stopping rule, MR‑NaS satisfies
 
-  $$
+  \[
      \displaystyle\limsup_{\delta\to0}\frac{\tau}{\log(1/\delta)}\;\le\;U^\star(M)\quad\text{a.s.},
-  $$
+  \]
 
   matching the relaxed characteristic time $U^\star(M)$.&#x20;
 
