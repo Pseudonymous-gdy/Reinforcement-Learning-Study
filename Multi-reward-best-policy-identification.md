@@ -1,4 +1,4 @@
-$\# generated\ by\ ChatGPT$.
+$generated\ by\ ChatGPT$.
 ### 1  Background (in short)
 
 Designing *one* good reward is already tricky in reinforcement learning (RL); many practical tasks demand **testing or simultaneously satisfying several rewards** (e.g., coverage vs. throughput in radio networks, or different goal positions in robotics). The paper therefore studies how to explore once and still learn policies that are optimal for **every reward in a given set**.&#x20;
