@@ -127,6 +127,25 @@ class MCTS:
             elif self.policy == 'AOAP':
                 # For AOAP choose by the posterior mean estimate.
                 return self.pm[n]
+            elif self.policy == 'selfpolicy':
+                # For self-defined policy choose by lower confidence bound (LCB).
+                # Compute an adaptive confidence radius C matching the
+                # C_{delta/n} used in `_self_policy_add` and return ave - C.
+                # Use parent's visit count as t and number of children as n.
+                try:
+                    children_count = len(self.children[node]) if node in self.children else 1
+                except Exception:
+                    children_count = 1
+                t = max(1, self.N[node])
+                denom = max(self.delta / max(children_count, 1), 1e-12)
+                C = 0.0
+                try:
+                    inner = numpy.log2(2 * t) / denom
+                    if inner > 1.0:
+                        C = self.exploration_weight * sqrt(log(inner) / t)
+                except Exception:
+                    C = 0.0
+                return self.ave_Q[n] - C
             else:
                 # OCBA and fallback also use the empirical mean here.
                 return self.ave_Q[n]
