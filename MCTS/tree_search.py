@@ -85,7 +85,7 @@ class MCTS:
         self.epsilon: float = epsilon
         self.delta: float = delta
         self.gamma: float = gamma
-        self.root_select_round: int = 0
+        self.root_select_round: int = 0 # round data with values in 0, 1, 2
 
     def choose(self, node: "Node") -> "Node":
         """Choose the best child of `node` according to the configured policy.
@@ -378,62 +378,153 @@ class MCTS:
         node_depth = getattr(node, "depth", 0)
         if node_depth != 0:
             return self._uct_select(node)
-
+        
         # Now node is root (depth == 0). Implement the self-defined arm selection.
         children = list(self.children[node])
         n = max(1, len(children))
-
-        # Safely compute t: use visit count of the node (at least 1 to avoid div0)
-        t = max(1, self.N[node])
-
-        # Empirical means for children (default 0 for unvisited)
-        ave = {c: self.ave_Q[c] for c in children}
-        max_ave = max(ave.values())
-
-        # 1. Empirically good arms G
-        G = {c for c, v in ave.items() if v >= max_ave - self.epsilon}
-
-        # 2. Confidence radius C_{delta/n}
-        # C = exploration_weight * sqrt( log( log2(2t)/(delta/n) ) / t )
-        C = 0.0
-        try:
-            denom = max(self.delta / n, 1e-12)
-            inner = numpy.log2(2 * t) / denom
-            if inner > 1.0:
-                C = self.exploration_weight * sqrt(log(inner) / t)
-            else:
-                C = 0.0
-        except Exception:
-            C = 0.0
-
-        U_t = max_ave + C - self.epsilon - self.gamma
-        L_t = max_ave - C - self.epsilon
-
-        # compute UCB and LCB for each child
-        UCB = {c: ave[c] + C for c in children}
-        LCB = {c: ave[c] - C for c in children}
-
-        # 3. Known children K: UCB < L_t OR LCB > U_t
-        K = {c for c in children if (UCB[c] < L_t) or (LCB[c] > U_t)}
-
-        # 4. Prefer arm in G \ K with lowest LCB
         if self.root_select_round == 0:
+            # Safely compute t: use visit count of the node (at least 1 to avoid div0)
+            self.t = max(1, self.N[node])
+
+            # Empirical means for children (default 0 for unvisited)
+            self.ave = {c: self.ave_Q[c] for c in children}
+            self.max_ave = max(self.ave.values())
+
+            # 1. Empirically good arms G
+            self.G = {c for c, v in self.ave.items() if v >= self.max_ave - self.epsilon}
+
+            # 2. Confidence radius C_{delta/n}
+            # C = exploration_weight * sqrt( log( log2(2t)/(delta/n) ) / t )
+            self.C = 0.0
+            try:
+                self.denom = max(self.delta / n, 1e-12)
+                self.inner = numpy.log2(2 * self.t) / self.denom
+                if self.inner > 1.0:
+                    self.C = self.exploration_weight * sqrt(log(self.inner) / self.t)
+                else:
+                    self.C = 0.0
+            except Exception:
+                self.C = 0.0
+
+            self.U_t = self.max_ave + self.C - self.epsilon - self.gamma
+            self.L_t = self.max_ave - self.C - self.epsilon
+
+            # compute UCB and LCB for each child
+            self.UCB = {c: self.ave[c] + self.C for c in children}
+            self.LCB = {c: self.ave[c] - self.C for c in children}
+
+            # 3. Known children K: UCB < L_t OR LCB > U_t
+            self.K = {c for c in children if (self.UCB[c] < self.L_t) or (self.LCB[c] > self.U_t)}
+
+            # 4. Prefer arm in G \ K with lowest LCB
+            
             self.root_select_round += 1
-            cand = list(G - K)
-            if cand:
+            self.cand = list(self.G - self.K)
+            if self.cand:
                 # choose min LCB; tie-break by highest N (more explored) then arbitrary
-                return min(cand, key=lambda x: (LCB[x], -self.N[x]))
+                return min(self.cand, key=lambda x: (self.LCB[x], -self.N[x]))
 
         # 5. Pull arm not in G ∪ K with highest UCB
         if self.root_select_round == 1:
             self.root_select_round += 1
-            cand = [c for c in children if (c not in G) and (c not in K)]
-            if cand:
-                return max(cand, key=lambda x: (UCB[x], self.N[x]))
+            self.cand = [c for c in children if (c not in self.G) and (c not in self.K)]
+            if self.cand:
+                return max(self.cand, key=lambda x: (self.UCB[x], self.N[x]))
 
         # 6. Otherwise pull the global empirically best arm with highest UCB
         self.root_select_round = 0
-        return max(children, key=lambda x: (UCB[x], self.N[x]))
+        return max(children, key=lambda x: (self.UCB[x], self.N[x]))
+    
+    def _self_policy_mult(self, node: "Node") -> "Node":
+        """Select a child using the self-defined policy.
+        
+        Returns:
+            The child Node maximizing the self-defined policy.
+        
+        Policy description:
+        - If we're searching not from the root node (depth 0), conduct _uct_select.
+        - If we're at the root node (depth 0), conduct the following strategy:
+            1. Set Empirically Good Arms: G = {i: ave_Q[i] >= max(ave_Q) * (1 - epsilon)}
+            2. Calculate U_t = (max(ave_Q) + C_{delta/n}) * (1 - epsilon - gamma)
+                and L_t = (max(ave_Q) - C_{delta/n}) * (1 - epsilon)
+            3. Set Known Children K as the set of children with Upper Confidence under
+                L_t or Lower Confidence above U_t
+            4. Pull the arm in G \ K with the lowest LCB (Lower Confidence Bound)
+            5. Pull the arm not in G∪K with the highest UCB (Upper Confidence Bound)
+            6. Pull the global empirically best arm with highest UCB
+
+        Note:
+        - C_{delta} = exploration_weight * sqrt(log(log_2(2t)/delta)/t), which is the confidence radius in this policy to calculate UCB or LCB
+        - t here is the total number of selected times of the node to choose from the root
+        - gamma is different from GAMMA, it's a small positive constant to avoid over-exploitation
+        """
+        # Ensure children are populated and depths assigned (backwards compatible)
+        if len(self.children[node]) == 0:
+            children_found = node.find_children()
+            for c in children_found:
+                self._ensure_depth(c, node)
+            self.children[node] = children_found
+
+        # If node isn't the root (depth != 0) fall back to classic UCT selection
+        node_depth = getattr(node, "depth", 0)
+        if node_depth != 0:
+            return self._uct_select(node)
+        
+        # Now node is root (depth == 0). Implement the self-defined arm selection.
+        children = list(self.children[node])
+        n = max(1, len(children))
+        if self.root_select_round == 0:
+            # Safely compute t: use visit count of the node (at least 1 to avoid div0)
+            self.t1 = max(1, self.N[node])
+
+            # Empirical means for children (default 0 for unvisited)
+            self.ave1 = {c: self.ave_Q[c] for c in children}
+            self.max_ave1 = max(self.ave.values())
+
+            # 1. Empirically good arms G
+            self.G1 = {c for c, v in self.ave.items() if v >= self.max_ave * (1 - self.epsilon)}
+
+            # 2. Confidence radius C_{delta/n}
+            # C = exploration_weight * sqrt( log( log2(2t)/(delta/n) ) / t )
+            self.C1 = 0.0
+            try:
+                self.denom1 = max(self.delta / n, 1e-12)
+                self.inner1 = numpy.log2(2 * self.t1) / self.denom1
+                if self.inner1 > 1.0:
+                    self.C1 = self.exploration_weight * sqrt(log(self.inner1) / self.t1)
+                else:
+                    self.C1 = 0.0
+            except Exception:
+                self.C1 = 0.0
+
+            self.U_t1 = (self.max_ave1 + self.C1) * (1 - self.epsilon - self.gamma)
+            self.L_t1 = (self.max_ave1 - self.C1) * (1 - self.epsilon)
+
+            # compute UCB and LCB for each child
+            self.UCB1 = {c: self.ave1[c] + self.C1 for c in children}
+            self.LCB1 = {c: self.ave1[c] - self.C1 for c in children}
+
+            # 3. Known children K: UCB < L_t OR LCB > U_t
+            self.K1 = {c for c in children if (self.UCB1[c] < self.L_t1) or (self.LCB1[c] > self.U_t1)}
+
+            # 4. Prefer arm in G \ K with lowest LCB
+            
+            self.root_select_round += 1
+            self.cand1 = list(self.G1 - self.K1)
+            if self.cand1:
+                # choose min LCB; tie-break by highest N (more explored) then arbitrary
+                return min(self.cand1, key=lambda x: (self.LCB1[x], -self.N[x]))
+
+        # 5. Pull arm not in G ∪ K with highest UCB
+        if self.root_select_round == 1:
+            self.root_select_round += 1
+            self.cand1 = [c for c in children if (c not in self.G1) and (c not in self.K1)]
+            if self.cand1:
+                return max(self.cand1, key=lambda x: (self.UCB1[x], self.N[x]))
+
+        # 6. Otherwise pull the global empirically best arm with highest UCB
+        self.root_select_round = 0
+        return max(children, key=lambda x: (self.UCB1[x], self.N[x]))
 
     def _ensure_depth(self, child: Optional["Node"], parent: Optional["Node"]) -> None:
         """Ensure `child.depth` exists and is an int.
