@@ -36,7 +36,7 @@ class Environment:
         # Keep semantics: sample from the optimal arm's distribution
         return int(self.rng.binomial(1, float(self.optimal_mean)))
 
-    def get_dueling(self, a: int, b: int) -> int:
+    def get_dueling(self, a: int, b: int) -> float:
         """Compare two arms a and b by their mean rewards.
 
         Returns 1 if arm a is better than arm b (mean[a] > mean[b]), else 0.
@@ -47,7 +47,26 @@ class Environment:
         """
         if not (0 <= a < self.number_of_bandits) or not (0 <= b < self.number_of_bandits):
             raise IndexError("Arm index out of range")
-        return 1 if float(self.bandit_means[a]) > float(self.bandit_means[b]) else 0
+        if self.distribution == 'normal':
+            # Return 1 or 0 (or 0.5) based on sampled rewards
+            reward_1 = self.rng.normal(float(self.bandit_means[a]), float(self.standard_deviations[a]))
+            reward_2 = self.rng.normal(float(self.bandit_means[b]), float(self.standard_deviations[b]))
+            if reward_1 > reward_2:
+                return 1
+            elif reward_1 < reward_2:
+                return 0
+            else:
+                return 0.5
+        # Return 1 or 0 (or 0.5) with probability
+        # P(a beats b) when rewards are the same
+        reward_1 = self.rng.binomial(1, float(self.bandit_means[a]))
+        reward_2 = self.rng.binomial(1, float(self.bandit_means[b]))
+        if reward_1 > reward_2:
+            return 1
+        elif reward_1 < reward_2:
+            return 0
+        else:
+            return 0.5
     
     def get_bandit_means(self) -> List[float]:
         return self.bandit_means.tolist()
