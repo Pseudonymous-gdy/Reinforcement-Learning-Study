@@ -37,14 +37,30 @@ class Plot:
                 print(f"Alpha: {self.alpha}, Step: {count}, Candidates left: {len(self.strategy.candidates)}")
         return candidate_numbers
     
-plotter = Plot(Environment(50, seed=42))
+
 plt.figure()
 for alpha in [0.0, 0.25, 0.5, 0.75, 1.0]:
-    plotter.update_with_new_alpha(alpha)
-    steps = plotter.simulate()
-    plt.plot(steps, label=f"alpha={alpha}")
+    all_runs = []
+    max_len = 0
+    num_seeds = 20
+    for seed in range(num_seeds):
+        plotter = Plot(Environment(15, seed=seed))
+        plotter.update_with_new_alpha(alpha)
+        run = plotter.simulate()
+        all_runs.append(run)
+        if len(run) > max_len:
+            max_len = len(run)
+    
+    # Pad runs to the same length and sum them up
+    summed_steps = np.zeros(max_len)
+    for run in all_runs:
+        padded_run = np.pad(run, (0, max_len - len(run)), 'constant', constant_values=run[-1] if run else 0)
+        summed_steps += padded_run
+        
+    avg_steps = summed_steps / num_seeds
+    plt.plot(avg_steps, label=f"alpha={alpha}")
 plt.xlabel("Number of steps")
-plt.ylabel("Number of candidates")
+plt.ylabel("Average number of candidates")
 plt.title("Number of candidates over time")
 plt.legend()
 plt.show()
