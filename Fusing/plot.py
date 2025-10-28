@@ -29,11 +29,11 @@ class Plot:
     def simulate(self):
         count = 0
         candidate_numbers = []
-        while len(self.strategy.candidates) > 1 and count < 10000:
+        while len(self.strategy.candidates) > 1 and count < 100000:
             self.strategy.step()
             count += 1
             candidate_numbers.append(len(self.strategy.candidates))
-            if count % 1000 == 999:
+            if count % 20000 == 19999:
                 print(f"Alpha: {self.alpha}, Step: {count}, Candidates left: {len(self.strategy.candidates)}")
         return candidate_numbers
     
@@ -44,7 +44,7 @@ for alpha in [0.0, 0.25, 0.5, 0.75, 1.0]:
     max_len = 0
     num_seeds = 20
     for seed in range(num_seeds):
-        plotter = Plot(Environment(15, seed=seed))
+        plotter = Plot(Environment(30, seed=seed))
         plotter.update_with_new_alpha(alpha)
         run = plotter.simulate()
         all_runs.append(run)

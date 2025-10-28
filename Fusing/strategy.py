@@ -258,15 +258,17 @@ class ProbabilisticStrategy:
 
 if __name__ == "__main__":
     # Quick sanity run for both branches
-    env = Environment(5, seed=42)
-    strategy = ProbabilisticStrategy(env, alpha=0.5, seed=123)
-    for t in range(10000):
+    env = Environment(30, seed=42)
+    strategy = ProbabilisticStrategy(env, alpha=0, seed=123)
+    for t in range(100000):
+        if t >= 100000 / np.log10(100000):
+            strategy.alpha = 0
         result = strategy.step()
-        # progress reporting every 1000 steps
-        if t % 1000 == 999:
+        # progress reporting every 10000 steps
+        if t % 10000 == 1999:
             if isinstance(result, tuple):
-                print(f"\nDuel compared: {result}")
+                print(f"# of Candidates left: {len(strategy.candidates)}")
             else:
-                print(f"\nPulled arm: {result}")
-    print("\nCandidates left:", strategy.candidates)
+                print(f"# of Candidates left: {len(strategy.candidates)}")
+            print("Candidates left:", strategy.candidates)
     print("True means:", env.get_bandit_means())
