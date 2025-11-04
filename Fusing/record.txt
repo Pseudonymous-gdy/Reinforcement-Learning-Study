@@ -20,3 +20,28 @@ Index: 3, Alpha: 0.75, Correct: 0.0, Candidates Left: 7.4
 Index: 3, Alpha: 1.0, Correct: 0.0, Candidates Left: 14.9
 Index: 4, Alpha: 0.0, Correct: 0.0, Candidates Left: 8.0
 Index: 4, Alpha: 0.25, Correct: 0.0, Candidates Left: 9.8
+Index: 4, Alpha: 0.5, Correct: 0.0, Candidates Left: 12.5
+Index: 4, Alpha: 0.75, Correct: 0.0, Candidates Left: 14.9
+Index: 4, Alpha: 1.0, Correct: 0.0, Candidates Left: 15.0
+Index: 5, Alpha: 0.0, Correct: 0.0, Candidates Left: 2.0
+Index: 5, Alpha: 0.25, Correct: 0.0, Candidates Left: 2.2
+Index: 5, Alpha: 0.5, Correct: 0.0, Candidates Left: 3.5
+Index: 5, Alpha: 0.75, Correct: 0.0, Candidates Left: 4.0
+Index: 5, Alpha: 1.0, Correct: 0.0, Candidates Left: 11.3
+Index: 0, Decay:decay1, Alpha: 0.0, Correct: 1.0, Candidates Left: 1.0
+Index: 0, Decay:decay1, Alpha: 0.25, Correct: 1.0, Candidates Left: 1.0
+Index: 0, Decay:decay1, Alpha: 0.5, Correct: 1.0, Candidates Left: 1.0
+Index: 0, Decay:decay1, Alpha: 0.75, Correct: 1.0, Candidates Left: 1.0
+Index: 0, Decay:decay1, Alpha: 1.0, Correct: 0.0, Candidates Left: 2.4
+Index: 1, Decay:decay1, Alpha: 0.0, Correct: 1.0, Candidates Left: 1.0
+Index: 1, Decay:decay1, Alpha: 0.25, Correct: 1.0, Candidates Left: 1.0
+Index: 1, Decay:decay1, Alpha: 0.5, Correct: 1.0, Candidates Left: 1.0
+Index: 1, Decay:decay1, Alpha: 0.75, Correct: 1.0, Candidates Left: 1.0
+Index: 1, Decay:decay1, Alpha: 1.0, Correct: 1.0, Candidates Left: 1.0
+Index: 2, Decay:decay1, Alpha: 0.0, Correct: 1.0, Candidates Left: 1.0
+Index: 2, Decay:decay1, Alpha: 0.25, Correct: 1.0, Candidates Left: 1.0
+Index: 2, Decay:decay1, Alpha: 0.5, Correct: 1.0, Candidates Left: 1.0
+Index: 2, Decay:decay1, Alpha: 0.75, Correct: 1.0, Candidates Left: 1.0
+Index: 2, Decay:decay1, Alpha: 1.0, Correct: 1.0, Candidates Left: 1.0
+Index: 3, Decay:decay1, Alpha: 0.0, Correct: 0.4, Candidates Left: 1.6
+Index: 3, Decay:decay1, Alpha: 0.25, Correct: 0.0, Candidates Left: 2.0
