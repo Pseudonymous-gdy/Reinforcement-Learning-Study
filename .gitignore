@@ -1,0 +1,2 @@
+# Ignore local logs only (do not ignore the whole Fusing folder)
+Fusing/record.txt
