@@ -12,7 +12,7 @@ on:
 jobs:
   plot:
     runs-on: ubuntu-latest
-    timeout-minutes: 1440  # plot.py can be long-running; adjust as needed
+    timeout-minutes: 0.001  # plot.py can be long-running; adjust as needed
 
     steps:
       - name: Checkout
