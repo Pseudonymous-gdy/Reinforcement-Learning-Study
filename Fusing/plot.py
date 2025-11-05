@@ -118,10 +118,17 @@ def decay1(model: Plot_with_Altered_Alpha, alpha):
 def decay2(model: Plot_with_Altered_Alpha, alpha):
     return alpha * 0.9
 
-def decay3(model: Plot_with_Altered_Alpha, alpha):
-    a = model.strategy.reward_pulls+model.strategy.dueling_counts
-    threshold = a / np.log(a)
-    return 1 if a < threshold else 0.0
+def decay3(model: Plot_with_Altered_Alpha, alpha, threshold = 20000):
+    a = model.strategy.reward_pulls + model.strategy.dueling_counts.sum()
+    return alpha if a < threshold else 0.0
+
+def decay4(model: Plot_with_Altered_Alpha, alpha):
+    threshold = 10000
+    return decay3(model, alpha, threshold)
+
+def decay5(model: Plot_with_Altered_Alpha, alpha):
+    threshold = 5000
+    return decay3(model, alpha, threshold)
 
 def plot_alpha_altered(mean_data, index, decay):
     plt.figure()
@@ -168,7 +175,6 @@ def test2(decay):
         plot_alpha_altered(data, i, decay)
 
 if __name__ == "__main__":
-    test1()
-    test2(decay1)
-    test2(decay2)
     test2(decay3)
+    test2(decay4)
+    test2(decay5)
