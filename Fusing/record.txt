@@ -171,3 +171,10 @@ Index: 3, Decay:decay5, Alpha: 1.0, Correct: 0.3, Candidates Left: 1.7
 Index: 4, Decay:decay5, Alpha: 0.0, Correct: 0.0, Candidates Left: 8.0
 Index: 4, Decay:decay5, Alpha: 0.25, Correct: 0.0, Candidates Left: 8.2
 Index: 4, Decay:decay5, Alpha: 0.5, Correct: 0.0, Candidates Left: 8.0
+Index: 4, Decay:decay5, Alpha: 0.75, Correct: 0.0, Candidates Left: 7.8
+Index: 4, Decay:decay5, Alpha: 1.0, Correct: 0.0, Candidates Left: 7.7
+Index: 5, Decay:decay5, Alpha: 0.0, Correct: 0.0, Candidates Left: 2.0
+Index: 5, Decay:decay5, Alpha: 0.25, Correct: 0.0, Candidates Left: 2.0
+Index: 5, Decay:decay5, Alpha: 0.5, Correct: 0.0, Candidates Left: 2.0
+Index: 5, Decay:decay5, Alpha: 0.75, Correct: 0.0, Candidates Left: 2.0
+Index: 5, Decay:decay5, Alpha: 1.0, Correct: 0.0, Candidates Left: 2.0
