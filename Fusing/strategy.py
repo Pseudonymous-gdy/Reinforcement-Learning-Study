@@ -48,7 +48,7 @@ class ProbabilisticStrategy:
 
         # ---------- Reward (UCB) state ----------
         self.counts: List[int] = [0] * env.number_of_bandits
-        self.values: List[float] = [0.0] * env.number_of_bandits
+        self.values: List[float] = [0.0] * env.number_of_bandits # empirical means
         self.explore_reward: float = 0.5  # multiplier for reward confidence radius
 
         # ---------- Dueling (pairwise) state ----------
@@ -173,18 +173,11 @@ class ProbabilisticStrategy:
                 self.values[only] += (reward - self.values[only]) / self.counts[only]
                 return int(only)
 
-        # --- (C) UCB arm selection among remaining candidates (paper-style CR) ---
-        best_score: Optional[float] = None
-        chosen_arm: Optional[int] = None
-        for i in self.candidates:
-            if self.counts[i] == 0:
-                chosen_arm = i
-                break
-            score = self.values[i] + self.explore_reward * self._CR_R(i)
-            if best_score is None or score > best_score:
-                best_score = score
-                chosen_arm = i
-        assert chosen_arm is not None
+        # --- (C) Sampling rule: pull the least-pulled arm among candidates ---
+        # Tie-break uniformly at random using the strategy RNG.
+        min_count = min(self.counts[i] for i in self.candidates)
+        least_pulled = [i for i in self.candidates if self.counts[i] == min_count]
+        chosen_arm = int(self.rng.choice(least_pulled))
 
         # Pull the chosen arm and update reward stats
         reward = float(self.env.get_reward(chosen_arm))
@@ -225,24 +218,27 @@ class ProbabilisticStrategy:
             if len(self.candidates) == 1:
                 return None  # remain consistent: do not create a duel with a single candidate
 
-        # --- (B) Pair selection: prefer uncertain pairs by minimum LCB_D(i,j) ---
-        def lcb(i: int, j: int) -> float:
-            cr = self.explore_dueling * self._CR_D(i, j)
-            return self.dueling_values[i, j] - cr
-
-        lcb_values: Dict[Tuple[int, int], float] = {}
-        for i in self.candidates:
-            for j in self.candidates:
-                if i != j:
-                    lcb_values[(i, j)] = lcb(i, j)
-
-        feasible = [((i, j), lcb_values[(i, j)])
-                    for i in self.candidates for j in self.candidates
-                    if i != j and (i, j) in lcb_values]
-        if not feasible:
+        # --- (B) Pair selection: choose two arms in candidates with fewest reward pulls ---
+        # Tie-break randomly among those with equal counts. If only one arm has the
+        # minimal count, choose the second from the next-minimal group.
+        counts_candidates = {i: self.counts[i] for i in self.candidates}
+        # sort unique counts
+        unique_counts = sorted(set(counts_candidates.values()))
+        if not unique_counts:
             return None
-
-        (i, j), _ = min(feasible, key=lambda x: x[1])
+        # collect arms with minimal count
+        min_count = unique_counts[0]
+        min_arms = [i for i, c in counts_candidates.items() if c == min_count]
+        if len(min_arms) >= 2:
+            i, j = self.rng.choice(min_arms, size=2, replace=False)
+        else:
+            # need a second arm from the next smallest group
+            if len(unique_counts) < 2:
+                return None
+            next_count = unique_counts[1]
+            next_arms = [i for i, c in counts_candidates.items() if c == next_count]
+            i = min_arms[0]
+            j = int(self.rng.choice(next_arms))
 
         # --- (C) Sample duel outcome and update pairwise stats only ---
         # outcome = 1.0 if i beats j, 0.0 if j beats i, 0.5 tie
