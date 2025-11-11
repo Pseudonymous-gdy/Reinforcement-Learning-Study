@@ -49,13 +49,13 @@ class ProbabilisticStrategy:
         # ---------- Reward (UCB) state ----------
         self.counts: List[int] = [0] * env.number_of_bandits
         self.values: List[float] = [0.0] * env.number_of_bandits # empirical means
-        self.explore_reward: float = 0.5  # multiplier for reward confidence radius
+        self.explore_reward: float = 1.0  # multiplier for reward confidence radius
 
         # ---------- Dueling (pairwise) state ----------
         n = env.number_of_bandits
         self.dueling_counts: np.ndarray = np.zeros((n, n), dtype=int)
         self.dueling_values: np.ndarray = np.zeros((n, n), dtype=float)  # v[i,j] ~ P(i beats j)
-        self.explore_dueling: float = 0.5  # multiplier for duel confidence radius
+        self.explore_dueling: float = 1.0  # multiplier for duel confidence radius
 
         # ---------- Candidate set & history ----------
         self.candidates: List[int] = list(range(env.number_of_bandits))
