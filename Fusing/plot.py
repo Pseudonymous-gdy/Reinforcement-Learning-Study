@@ -30,7 +30,7 @@ class Plot:
     def simulate(self):
         count = 0
         candidate_numbers = []
-        while len(self.strategy.candidates) > 1 and count < 200000:
+        while len(self.strategy.candidates) > 1 and count < 600000:
             self.strategy.step()
             count += 1
             candidate_numbers.append(len(self.strategy.candidates))
@@ -50,7 +50,7 @@ class Plot:
         candidate_numbers = []
         snapshot_steps = []
         snapshots: List[np.ndarray] = []
-        while len(self.strategy.candidates) > 1 and count < 200000:
+        while len(self.strategy.candidates) > 1 and count < 600000:
             self.strategy.step()
             count += 1
             candidate_numbers.append(len(self.strategy.candidates))
@@ -79,7 +79,7 @@ def plot_alpha_effect(mean_data, index, num_seeds: int = 10, compute_variance: b
         all_runs = []
         answers = []
         max_len = 0
-        num_seeds = 10
+        num_seeds = 100
         candidates = 0
 
         # prepare args for workers; we always collect candidate runs (per-seed)
@@ -183,7 +183,7 @@ class Plot_with_Altered_Alpha(Plot):
     def simulate_with_decay(self):
         count = 0
         candidate_numbers = []
-        while len(self.strategy.candidates) > 1 and count < 200000:
+        while len(self.strategy.candidates) > 1 and count < 600000:
             self.strategy.alpha = self.decay(self, self.alpha)
             self.strategy.step()
             count += 1
@@ -198,19 +198,19 @@ def decay1(model: Plot_with_Altered_Alpha, alpha):
 def decay2(model: Plot_with_Altered_Alpha, alpha):
     return alpha * 0.9
 
-def decay3(model: Plot_with_Altered_Alpha, alpha, threshold = 20000):
+def decay3(model: Plot_with_Altered_Alpha, alpha, threshold = 40000):
     a = model.strategy.reward_pulls + model.strategy.dueling_counts.sum()
     return alpha if a < threshold else 0.0
 
 def decay4(model: Plot_with_Altered_Alpha, alpha):
-    threshold = 10000
+    threshold = 20000
     return decay3(model, alpha, threshold)
 
 def decay5(model: Plot_with_Altered_Alpha, alpha):
-    threshold = 5000
+    threshold = 10000
     return decay3(model, alpha, threshold)
 
-def plot_alpha_altered(mean_data, index, decay, num_seeds: int = 10, compute_variance: bool = False):
+def plot_alpha_altered(mean_data, index, decay, num_seeds: int = 100, compute_variance: bool = False):
     """Plot altered-alpha experiments; optionally overlay CI like plot_alpha_effect.
 
     Args:
