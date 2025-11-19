@@ -38,11 +38,11 @@ class ProbabilisticStrategy:
     - We keep your probabilistic branch selection and history bookkeeping.
     """
 
-    def __init__(self, env: Environment, alpha: float = 0.5, seed: Optional[int] = None):
+    def __init__(self, env: Environment, alpha: float = 0.5, seed: Optional[int] = None, _type: str='uniform'):
         assert 0.0 <= alpha <= 1.0, "alpha must be in [0, 1]"
         self.env = env
         self.alpha = alpha  # Probability to choose reward-UCB branch
-
+        self.type = _type
         # Internal RNG for strategy decisions (separate from env RNG)
         self.rng = np.random.default_rng(seed)
 
@@ -73,23 +73,28 @@ class ProbabilisticStrategy:
     # =========================
     # Confidence radius helpers
     # =========================
-    def _log_arg(self) -> float:
+    def _log_arg(self, branch: str='r') -> float:
         """Argument inside the logarithm: K * t / delta, made numerically safe."""
         # Ensure strictly positive argument; t is at least 1 once the first step completes.
         K = max(1, self.K)
-        t = max(1, self.t)
+        if branch == 'r':
+            t = max(1, self.reward_pulls)
+        elif branch == 'd':
+            t = max(1, self.dueling_pulls)
+        else:
+            raise ValueError(f"Unknown branch {branch}")
         delta = max(self._delta, 1e-12)
         return max((K * t) / delta, 1.0)
 
     def _CR_R(self, k: int) -> float:
         """Reward-side confidence radius for arm k."""
         n_k = max(1, self.counts[k])
-        return math.sqrt(2.0 * math.log(self._log_arg()) / n_k)
+        return math.sqrt(2.0 * math.log(self._log_arg('r')) / n_k)
 
     def _CR_D(self, i: int, j: int) -> float:
         """Dueling-side confidence radius for ordered pair (i, j)."""
         m_ij = max(1, int(self.dueling_counts[i, j]))
-        return math.sqrt(2.0 * math.log(self._log_arg()) / m_ij)
+        return math.sqrt(2.0 * math.log(self._log_arg('d')) / m_ij)
 
     # ========
     # One step
@@ -174,10 +179,18 @@ class ProbabilisticStrategy:
                 return int(only)
 
         # --- (C) Sampling rule: pull the least-pulled arm among candidates ---
-        # Tie-break uniformly at random using the strategy RNG.
-        min_count = min(self.counts[i] for i in self.candidates)
-        least_pulled = [i for i in self.candidates if self.counts[i] == min_count]
-        chosen_arm = int(self.rng.choice(least_pulled))
+        chosen_arm = 0
+        if self.type == 'uniform':
+            # Tie-break uniformly at random using the strategy RNG.
+            min_count = min(self.counts[i] for i in self.candidates)
+            least_pulled = [i for i in self.candidates if self.counts[i] == min_count]
+            chosen_arm = int(self.rng.choice(least_pulled))
+        if self.type == 'cr':
+            # Tie-break using the highest UCB score
+            ucb_scores = {}
+            for i in self.candidates:
+                ucb_scores[i] = self.values[i] + self.explore_reward * self._CR_R(i)
+            chosen_arm = max(ucb_scores, key=ucb_scores.get)
 
         # Pull the chosen arm and update reward stats
         reward = float(self.env.get_reward(chosen_arm))
@@ -218,27 +231,52 @@ class ProbabilisticStrategy:
             if len(self.candidates) == 1:
                 return None  # remain consistent: do not create a duel with a single candidate
 
-        # --- (B) Pair selection: choose two arms in candidates with fewest reward pulls ---
-        # Tie-break randomly among those with equal counts. If only one arm has the
-        # minimal count, choose the second from the next-minimal group.
-        counts_candidates = {i: self.counts[i] for i in self.candidates}
-        # sort unique counts
-        unique_counts = sorted(set(counts_candidates.values()))
-        if not unique_counts:
-            return None
-        # collect arms with minimal count
-        min_count = unique_counts[0]
-        min_arms = [i for i, c in counts_candidates.items() if c == min_count]
-        if len(min_arms) >= 2:
-            i, j = self.rng.choice(min_arms, size=2, replace=False)
-        else:
-            # need a second arm from the next smallest group
-            if len(unique_counts) < 2:
+        # --- (B) Pair selection ---
+        # Two selection modes supported by `self.type`:
+        # - 'cr': choose the ordered pair (i,j) with maximum LCB_D(i,j) = v[i,j] - CR_D(i,j)
+        #         (tie-broken randomly). This prefers pairs the model is most confident
+        #         that i beats j (useful for 'confidence/CR' driven behavior).
+        # - otherwise: choose two arms in candidates with fewest reward pulls (original)
+        #             tie-break randomly among equals; if only one arm has minimal pulls,
+        #             pick the second from the next minimal group.
+
+        if self.type == 'cr':
+            # compute LCB for every ordered pair and pick the pair with largest LCB
+            lcb_values: Dict[Tuple[int, int], float] = {}
+            for a in self.candidates:
+                for b in self.candidates:
+                    if a == b:
+                        continue
+                    cr = self.explore_dueling * self._CR_D(a, b)
+                    lcb_values[(a, b)] = self.dueling_values[a, b] - cr
+
+            if not lcb_values:
                 return None
-            next_count = unique_counts[1]
-            next_arms = [i for i, c in counts_candidates.items() if c == next_count]
-            i = min_arms[0]
-            j = int(self.rng.choice(next_arms))
+
+            # choose pair(s) with minimum LCB; tie-break randomly using RNG
+            min_lcb = min(lcb_values.values())
+            best_pairs = [pair for pair, val in lcb_values.items() if val == min_lcb]
+            chosen = self.rng.choice(best_pairs)
+            i, j = int(chosen[0]), int(chosen[1])
+        else:
+            counts_candidates = {k: self.counts[k] for k in self.candidates}
+            # sort unique counts
+            unique_counts = sorted(set(counts_candidates.values()))
+            if not unique_counts:
+                return None
+            # collect arms with minimal count
+            min_count = unique_counts[0]
+            min_arms = [k for k, c in counts_candidates.items() if c == min_count]
+            if len(min_arms) >= 2:
+                i, j = self.rng.choice(min_arms, size=2, replace=False)
+            else:
+                # need a second arm from the next smallest group
+                if len(unique_counts) < 2:
+                    return None
+                next_count = unique_counts[1]
+                next_arms = [k for k, c in counts_candidates.items() if c == next_count]
+                i = min_arms[0]
+                j = int(self.rng.choice(next_arms))
 
         # --- (C) Sample duel outcome and update pairwise stats only ---
         # outcome = 1.0 if i beats j, 0.0 if j beats i, 0.5 tie
@@ -255,10 +293,10 @@ class ProbabilisticStrategy:
 if __name__ == "__main__":
     # Quick sanity run for both branches
     env = Environment(30, seed=42)
-    strategy = ProbabilisticStrategy(env, alpha=0, seed=123)
+    strategy = ProbabilisticStrategy(env, alpha=1, seed=123, _type='cr')  # dueling only
     for t in range(100000):
         if t >= 100000 / np.log10(100000):
-            strategy.alpha = 0
+            strategy.alpha = 0.2
         result = strategy.step()
         # progress reporting every 10000 steps
         if t % 10000 == 1999:
