@@ -1,3 +1,5 @@
 # Ignore local logs only (do not ignore the whole Fusing folder)
 Fusing/__pycache__
 bin
+Fusing2/log/**/FSH_*
+Fusing2/log/**/**/md
