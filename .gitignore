@@ -1,6 +1,18 @@
 # Ignore local logs only (do not ignore the whole Fusing folder)
 Fusing/__pycache__
 bin
-Fusing2/log/**/FSH_*
-Fusing2/log/**/**/md
 *.pyc
+
+# Ignore everything under Fusing2/log
+Fusing2/log/**
+
+## un-ignore directories under Fusing2/log so specific subfolders can be re-included
+!Fusing2/log/**/
+
+## keep integration folders and their contents under Fusing2/log
+!Fusing2/log/**/integration/
+!Fusing2/log/**/integration/**
+
+## keep config.json files (under Fusing2/log and elsewhere)
+!Fusing2/log/**/config.json
+!**/config.json
