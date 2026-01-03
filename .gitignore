@@ -3,3 +3,4 @@ Fusing/__pycache__
 bin
 Fusing2/log/**/FSH_*
 Fusing2/log/**/**/md
+*.pyc
