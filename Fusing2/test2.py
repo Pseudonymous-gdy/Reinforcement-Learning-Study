@@ -23,6 +23,14 @@
 #   This script FORCE-OVERRIDES env.bandit_means directly to preserve identity.
 # - Extreme params alpha/gamma/keep ∈ {0,1} may break your class impl. We fallback to
 #   a reference implementation inferred from DuelThenReward semantics.
+#
+# Logging + plotting constraints requested:
+# - scenario is the "bandit state" (uniform_gap, increasing_gap, etc.)
+# - record structure: scenario -> K -> algo -> setting -> per_seed.csv + md logs + plots
+# - each setting must have its own plots (static + plotly index)
+# - after finishing a scenario: build scenario-level integration plots + plotly, zip it,
+#   then DELETE the scenario directory to save space
+# - after all scenarios: build GLOBAL integration plots across all settings (NOT zipped)
 # ─────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -30,6 +38,8 @@ import sys
 import json
 import math
 import time
+import shutil
+import zipfile
 import argparse
 import datetime as dt
 import multiprocessing as mp
@@ -46,7 +56,7 @@ try:
 except Exception:
     tqdm = None
 
-# headless matplotlib plots (optional; still useful for quick PNG exports)
+# headless matplotlib plots
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -160,6 +170,10 @@ def permute_mu(mu_sorted: np.ndarray, seed: int, K: int, base_perm_seed: int) ->
     """
     Apply deterministic permutation per (seed, K).
     Returns (mu_permuted, perm).
+
+    Note:
+      We do NOT explicitly build a "paper dueling matrix" nu.
+      env.get_dueling() uses mu-differences => permuting mu induces the same permutation on the duel structure.
     """
     rng = np.random.default_rng(int(base_perm_seed + 100000 * K + seed))
     perm = rng.permutation(K).astype(int)
@@ -184,7 +198,7 @@ class AlgoConfig:
     def total_budget(self) -> int:
         # linear budget scaling with K/16
         scale = self.K / 16.0
-        return int(round(self.base_budget_16 * scale))
+        return max(self.K, int(round(self.base_budget_16 * scale * np.log2(scale + 1e-12))))
 
     def config_id(self) -> str:
         if self.algo == "FSH":
@@ -240,17 +254,25 @@ def make_env_fixed(env_seed: int, K: int, mu: np.ndarray) -> Environment:
 # Duel utilities + Borda
 # -----------------------------------------------------------------------------
 def _duel_winner(env: Environment, rng: np.random.Generator, i: int, j: int) -> int:
+    """
+    Returns winner arm index (i or j).
+    Supports both:
+      - env.duel(i, j) -> i/j
+      - env.get_dueling(i, j) -> {0,1,0.5} (interpreted as outcome for i)
+    """
     if hasattr(env, "duel"):
         w = int(env.duel(i, j))
         if w not in (i, j):
             raise ValueError(f"env.duel must return i or j, got {w}")
         return w
+
     out = float(env.get_dueling(i, j))
     if out == 1.0:
         return i
     if out == 0.0:
         return j
-    return int(rng.choice([i, j]))  # tie
+    # tie
+    return int(rng.choice([i, j]))
 
 
 def _borda_on_set(nu_hat: np.ndarray, C: List[int]) -> Dict[int, float]:
@@ -344,8 +366,9 @@ def run_fsh_reference(
         C_pre = list(C)
 
         # duel phase
-        if nD <= 0:
+        if nD <= 0 or len(C_pre) <= 1:
             C_tilde = list(C_pre)
+            borda_pre = _borda_on_set(nu_hat, C_pre)
         else:
             for _ in range(nD):
                 i = int(rng.choice(C_pre))
@@ -368,7 +391,7 @@ def run_fsh_reference(
             C_tilde = _topk_by_score(C_pre, primary=borda_pre, secondary=None, k=keep_duel)
 
         # reward phase
-        if nR > 0:
+        if nR > 0 and len(C_tilde) > 0:
             for _ in range(nR):
                 a = int(rng.choice(C_tilde))
                 rwd = float(env.get_reward(a))
@@ -386,15 +409,13 @@ def run_fsh_reference(
                 k=keep_reward
             )
         else:
-            borda_tilde = _borda_on_set(nu_hat, C_tilde)
-            keep_reward = max(1, int(math.floor(episode_keep * len(C_tilde))))
-            C_post = _topk_by_score(C_tilde, primary=borda_tilde, secondary=None, k=keep_reward)
+            borda_tilde = _borda_on_set(nu_hat, C_tilde) if len(C_tilde) > 0 else {}
+            keep_reward = max(1, int(math.floor(episode_keep * max(1, len(C_tilde)))))
+            C_post = _topk_by_score(C_tilde, primary=borda_tilde, secondary=None, k=keep_reward) if len(C_tilde) else list(C_pre)
 
         spent += T_r
 
-        borda_for_log = _borda_on_set(nu_hat, C_pre)
-        top3_borda = sorted([(i, borda_for_log[i]) for i in borda_for_log], key=lambda x: x[1], reverse=True)[:3]
-
+        top3_borda = sorted([(i, borda_pre[i]) for i in borda_pre], key=lambda x: x[1], reverse=True)[:3]
         mu_snapshot = {int(i): float(mu_hat[i]) for i in C_tilde if N[i] > 0}
         mu_sorted = sorted(mu_snapshot.items(), key=lambda x: x[1], reverse=True)
 
@@ -414,7 +435,7 @@ def run_fsh_reference(
 
         C = list(C_post)
 
-    # final
+    # final decision
     if len(C) == 1:
         final = int(C[0])
     else:
@@ -641,6 +662,8 @@ def write_seed_md(
     lines.append(f"- impl_used: `{extra.get('impl_used')}`")
     if "fallback_reason" in extra:
         lines.append(f"- fallback_reason: `{extra['fallback_reason']}`")
+    if "error" in extra:
+        lines.append(f"- error: `{extra['error']}`")
     lines.append("")
     lines.append("## Seed / Repro")
     lines.append(f"- seed: {seed}")
@@ -693,7 +716,145 @@ def write_seed_md(
 
 
 # -----------------------------------------------------------------------------
-# Matplotlib plotting (optional)
+# Per-setting plots (MUST exist for every setting)
+# -----------------------------------------------------------------------------
+def plot_setting_static(per_seed_df: pd.DataFrame, out_dir: Path, title_prefix: str) -> None:
+    """
+    Save a compact set of PNG plots for this *single setting*.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if per_seed_df.empty:
+        return
+
+    df = per_seed_df.sort_values("seed").copy()
+    seeds = df["seed"].astype(int).values
+    correct = df["correct"].astype(int).values
+
+    # 1) correctness by seed
+    plt.figure()
+    plt.scatter(seeds, correct, s=14)
+    plt.yticks([0, 1], ["0", "1"])
+    plt.ylim(-0.1, 1.1)
+    plt.xlabel("seed")
+    plt.ylabel("correct")
+    plt.title(f"{title_prefix} | correct-by-seed")
+    plt.tight_layout()
+    plt.savefig(out_dir / "correct_by_seed.png", dpi=220)
+    plt.close()
+
+    # 2) cumulative accuracy
+    cum = np.cumsum(correct) / np.arange(1, len(correct) + 1)
+    plt.figure()
+    plt.plot(seeds, cum, marker="o", markersize=3)
+    plt.ylim(0.0, 1.0)
+    plt.xlabel("seed")
+    plt.ylabel("cumulative acc")
+    plt.title(f"{title_prefix} | cumulative acc")
+    plt.tight_layout()
+    plt.savefig(out_dir / "acc_cumulative.png", dpi=220)
+    plt.close()
+
+    # 3) final arm histogram
+    vc = df["final_arm"].astype(int).value_counts().sort_index()
+    plt.figure(figsize=(10, 3.2))
+    plt.bar(vc.index.astype(int), vc.values.astype(int))
+    plt.xlabel("final_arm")
+    plt.ylabel("count")
+    plt.title(f"{title_prefix} | final arm histogram")
+    plt.tight_layout()
+    plt.savefig(out_dir / "final_arm_hist.png", dpi=220)
+    plt.close()
+
+    # 4) fallback mark (if exists)
+    if "fallback_reason" in df.columns:
+        fb = df["fallback_reason"].notna().astype(int).values
+        if fb.sum() > 0:
+            plt.figure()
+            plt.scatter(seeds, fb, s=14)
+            plt.yticks([0, 1], ["0", "1"])
+            plt.ylim(-0.1, 1.1)
+            plt.xlabel("seed")
+            plt.ylabel("fallback")
+            plt.title(f"{title_prefix} | fallback-by-seed")
+            plt.tight_layout()
+            plt.savefig(out_dir / "fallback_by_seed.png", dpi=220)
+            plt.close()
+
+
+def _write_plotly_html(fig: "go.Figure", out_html: Path) -> None:
+    out_html.parent.mkdir(parents=True, exist_ok=True)
+    # self-contained HTML (no external CDN dependency)
+    fig.write_html(str(out_html), include_plotlyjs=True, full_html=True)
+
+
+def plot_setting_plotly(per_seed_df: pd.DataFrame, out_dir: Path, title_prefix: str) -> List[Tuple[str, Path]]:
+    """
+    Save a few HTML files for this single setting + return entries for an index page.
+    """
+    entries: List[Tuple[str, Path]] = []
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if per_seed_df.empty:
+        return entries
+
+    df = per_seed_df.sort_values("seed").copy()
+    df["cum_acc"] = df["correct"].cumsum() / (np.arange(len(df)) + 1)
+
+    # combined subplot: correct + cum_acc
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.10,
+                        subplot_titles=("correct by seed", "cumulative accuracy"))
+    fig.add_trace(go.Scatter(x=df["seed"], y=df["correct"], mode="markers", name="correct"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df["seed"], y=df["cum_acc"], mode="lines+markers", name="cum_acc"), row=2, col=1)
+    fig.update_yaxes(range=[-0.1, 1.1], row=1, col=1)
+    fig.update_yaxes(range=[0.0, 1.0], row=2, col=1)
+    fig.update_layout(title=f"{title_prefix} | seed traces", height=700, width=1100)
+    p = out_dir / "seed_traces.html"
+    _write_plotly_html(fig, p)
+    entries.append(("Seed traces (correct + cum acc)", p))
+
+    # final arm histogram
+    vc = df["final_arm"].astype(int).value_counts().reset_index()
+    vc.columns = ["final_arm", "count"]
+    fig2 = px.bar(vc.sort_values("final_arm"), x="final_arm", y="count",
+                  title=f"{title_prefix} | final arm histogram")
+    p2 = out_dir / "final_arm_hist.html"
+    _write_plotly_html(fig2, p2)
+    entries.append(("Final arm histogram", p2))
+
+    # fallback scatter (optional)
+    if "fallback_reason" in df.columns and df["fallback_reason"].notna().any():
+        df["fallback"] = df["fallback_reason"].notna().astype(int)
+        fig3 = px.scatter(df, x="seed", y="fallback", title=f"{title_prefix} | fallback by seed",
+                          hover_data=["final_arm", "best_arm", "fallback_reason"])
+        fig3.update_yaxes(range=[-0.1, 1.1])
+        p3 = out_dir / "fallback_by_seed.html"
+        _write_plotly_html(fig3, p3)
+        entries.append(("Fallback by seed", p3))
+
+    # index
+    idx = out_dir / "index.html"
+    write_plotly_index(idx, [(f"{title_prefix} | {t}", path) for t, path in entries])
+    entries.append(("Index", idx))
+    return entries
+
+
+def write_plotly_index(index_path: Path, entries: List[Tuple[str, Path]]) -> None:
+    """
+    entries: list of (title, html_path)
+    """
+    lines = []
+    lines.append("<html><head><meta charset='utf-8'><title>Plotly Outputs</title></head><body>")
+    lines.append("<h1>Interactive Outputs (Plotly)</h1>")
+    lines.append("<ul>")
+    for title, path in entries:
+        rel = os.path.relpath(str(path), str(index_path.parent))
+        lines.append(f"<li><a href='{rel}' target='_blank'>{title}</a></li>")
+    lines.append("</ul>")
+    lines.append("</body></html>")
+    index_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+# -----------------------------------------------------------------------------
+# Matplotlib plotting helpers for scenario/global integration
 # -----------------------------------------------------------------------------
 def plot_static_heatmaps_by_alpha(df_fsh: pd.DataFrame, out_dir: Path, title_prefix: str) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -740,14 +901,8 @@ def plot_static_3d_scatter(df_fsh: pd.DataFrame, out_png: Path, title: str) -> N
 
 
 # -----------------------------------------------------------------------------
-# Plotly interactive outputs
+# Plotly (scenario/global integration)
 # -----------------------------------------------------------------------------
-def _write_plotly_html(fig: "go.Figure", out_html: Path) -> None:
-    out_html.parent.mkdir(parents=True, exist_ok=True)
-    # self-contained HTML (no external CDN dependency)
-    fig.write_html(str(out_html), include_plotlyjs=True, full_html=True)
-
-
 def fig_plotly_3d_scatter(df_fsh: pd.DataFrame, scenario: str, K: int) -> "go.Figure":
     sub = df_fsh[(df_fsh["scenario"] == scenario) & (df_fsh["K"] == K)].copy()
     sub = sub.dropna(subset=["gamma", "episode_keep"])
@@ -788,8 +943,6 @@ def fig_plotly_small_multiples_heatmap(df_fsh: pd.DataFrame, scenario: str, K: i
         horizontal_spacing=0.06, vertical_spacing=0.12,
     )
 
-    # consistent colorbar across all
-    # build each alpha heatmap as a matrix (keeps x gammas)
     for idx, a in enumerate(alphas):
         df_a = sub[sub["alpha"] == a].copy()
         piv = df_a.pivot_table(index="episode_keep", columns="gamma", values="acc_mean", aggfunc="mean")
@@ -926,30 +1079,18 @@ def fig_plotly_baseline_acc_vs_alpha(df_base: pd.DataFrame, scenario: str, K: in
     return fig
 
 
-def write_plotly_index(index_path: Path, entries: List[Tuple[str, Path]]) -> None:
-    """
-    entries: list of (title, html_path)
-    """
-    lines = []
-    lines.append("<html><head><meta charset='utf-8'><title>Plotly Outputs</title></head><body>")
-    lines.append("<h1>Interactive Outputs (Plotly)</h1>")
-    lines.append("<ul>")
-    for title, path in entries:
-        rel = os.path.relpath(str(path), str(index_path.parent))
-        lines.append(f"<li><a href='{rel}' target='_blank'>{title}</a></li>")
-    lines.append("</ul>")
-    lines.append("</body></html>")
-    index_path.write_text("\n".join(lines), encoding="utf-8")
-
-
 # -----------------------------------------------------------------------------
 # Worker: one config (loops over all seeds)
 # -----------------------------------------------------------------------------
-def run_one_config_worker(args_tuple: Tuple[AlgoConfig, List[int], Dict[str, int], str, Any]) -> Dict[str, Any]:
-    cfg, seeds, base_seeds, outdir, q = args_tuple
+def run_one_config_worker(args_tuple: Tuple[AlgoConfig, List[int], Dict[str, int], str, Any, Dict[str, Any]]) -> Dict[str, Any]:
+    cfg, seeds, base_seeds, outdir, q, flags = args_tuple
+    matplotlib_enabled = bool(flags.get("matplotlib_enabled", True))
+    plotly_enabled = bool(flags.get("plotly_enabled", False))
+    plotly_available = bool(flags.get("plotly_available", False))
 
-    root = Path(outdir) / f"{cfg.scenario}_K{cfg.K}"
-    config_dir = root / cfg.folder_name()
+    # scenario -> K -> algo -> setting
+    scenario_dir = Path(outdir) / cfg.scenario
+    config_dir = scenario_dir / f"K{cfg.K}" / cfg.algo / cfg.folder_name()
     md_dir = config_dir / "md"
     md_dir.mkdir(parents=True, exist_ok=True)
 
@@ -969,14 +1110,29 @@ def run_one_config_worker(args_tuple: Tuple[AlgoConfig, List[int], Dict[str, int
             env = make_env_fixed(env_seed=env_seed, K=cfg.K, mu=mu_perm)
 
             t0 = time.time()
-            if cfg.algo == "FSH":
-                final_arm, extra = run_fsh_class_or_fallback(env, cfg, algo_seed=algo_seed)
-            elif cfg.algo == "BASELINE_NO_ELIM_MIX":
-                final_arm, extra = run_baseline_no_elim_mix(
-                    env, K=cfg.K, total_budget=total_budget, alpha=cfg.alpha, algo_seed=algo_seed
-                )
-            else:
-                raise ValueError(f"Unknown algo: {cfg.algo}")
+            final_arm = -1
+            extra: Dict[str, Any] = {}
+            try:
+                if cfg.algo == "FSH":
+                    final_arm, extra = run_fsh_class_or_fallback(env, cfg, algo_seed=algo_seed)
+                elif cfg.algo == "BASELINE_NO_ELIM_MIX":
+                    final_arm, extra = run_baseline_no_elim_mix(
+                        env, K=cfg.K, total_budget=total_budget, alpha=cfg.alpha, algo_seed=algo_seed
+                    )
+                else:
+                    raise ValueError(f"Unknown algo: {cfg.algo}")
+            except Exception as e:
+                # hard error in the algorithm runner: still log & keep going
+                final_arm = -1
+                extra = {
+                    "impl_used": "error",
+                    "spent_budget": 0,
+                    "duels": 0,
+                    "rewards": 0,
+                    "rounds_executed": 0,
+                    "round_trace": [{"round": None, "note": "algorithm runner crashed"}],
+                    "error": repr(e),
+                }
             t1 = time.time()
 
             correct = int(final_arm == best_arm)
@@ -1033,10 +1189,20 @@ def run_one_config_worker(args_tuple: Tuple[AlgoConfig, List[int], Dict[str, int
     per_seed_csv = config_dir / "per_seed.csv"
     per_seed_df.to_csv(per_seed_csv, index=False, encoding="utf-8-sig")
 
+    # per-setting summary metrics
     acc_mean = float(per_seed_df["correct"].mean()) if len(per_seed_df) else float("nan")
     acc_std = float(per_seed_df["correct"].std()) if len(per_seed_df) else float("nan")
     n = int(len(per_seed_df))
-    fallback_rate = float((per_seed_df["impl_used"] == "ref").mean()) if "impl_used" in per_seed_df.columns else 0.0
+    fallback_rate = float((per_seed_df["fallback_reason"].notna()).mean()) if "fallback_reason" in per_seed_df.columns else 0.0
+    error_rate = float((per_seed_df["impl_used"] == "error").mean()) if "impl_used" in per_seed_df.columns else 0.0
+
+    # ───────── per-setting plots ─────────
+    title_prefix = cfg.config_id()
+    if matplotlib_enabled:
+        plot_setting_static(per_seed_df, config_dir / "plots", title_prefix=title_prefix)
+
+    if plotly_enabled and plotly_available:
+        plot_setting_plotly(per_seed_df, config_dir / "plots_plotly", title_prefix=title_prefix)
 
     t1_cfg = time.time()
     summary = {
@@ -1049,15 +1215,141 @@ def run_one_config_worker(args_tuple: Tuple[AlgoConfig, List[int], Dict[str, int
         "alpha": float(cfg.alpha),
         "gamma": None if cfg.gamma is None else float(cfg.gamma),
         "episode_keep": None if cfg.episode_keep is None else float(cfg.episode_keep),
+        "use_class_impl": bool(cfg.use_class_impl),
         "n_seeds": n,
         "acc_mean": acc_mean,
         "acc_std": acc_std,
         "fallback_rate": fallback_rate,
+        "error_rate": error_rate,
         "wall_time_total_sec": float(t1_cfg - t0_cfg),
         "per_seed_csv": str(per_seed_csv),
     }
     (config_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return summary
+
+
+# -----------------------------------------------------------------------------
+# Zipping + deleting scenario directories
+# -----------------------------------------------------------------------------
+def zip_dir(src_dir: Path, zip_path: Path) -> None:
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    if zip_path.exists():
+        zip_path.unlink()
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for fp in src_dir.rglob("*"):
+            if fp.is_dir():
+                continue
+            arcname = fp.relative_to(src_dir.parent)  # keep top-level scenario folder name
+            zf.write(fp, arcname.as_posix())
+
+
+# -----------------------------------------------------------------------------
+# Scenario/global integration plotting
+# -----------------------------------------------------------------------------
+def build_integration_outputs(
+    *,
+    df_summary: pd.DataFrame,
+    scenarios: List[str],
+    Ks: List[int],
+    out_dir: Path,
+    tag: str,
+    matplotlib_enabled: bool,
+    plotly_enabled: bool,
+) -> None:
+    """
+    Build integration plots (static + plotly) for a given scope.
+
+    Scope is defined by df_summary contents.
+    - tag is used in folder names and titles (e.g., 'scenario=uniform_gap' or 'GLOBAL')
+    """
+    integ_dir = out_dir / "integration"
+    plots_dir = integ_dir / "plots"
+    plots_plotly_dir = integ_dir / "plots_plotly"
+    integ_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    plots_plotly_dir.mkdir(parents=True, exist_ok=True)
+
+    # Split for plotting
+    df_fsh = df_summary[df_summary["algo"] == "FSH"].copy()
+    df_base = df_summary[df_summary["algo"] == "BASELINE_NO_ELIM_MIX"].copy()
+
+    # Static plots
+    if matplotlib_enabled:
+        for scenario in scenarios:
+            for K in Ks:
+                sub_fsh = df_fsh[(df_fsh["scenario"] == scenario) & (df_fsh["K"] == K)].copy()
+                if not sub_fsh.empty:
+                    hm_dir = plots_dir / f"{scenario}_K{K}" / "heatmaps"
+                    plot_static_heatmaps_by_alpha(sub_fsh, hm_dir, title_prefix=f"{tag} | {scenario} K={K} FSH")
+
+                    out3d = plots_dir / f"{scenario}_K{K}" / "scatter_3d.png"
+                    out3d.parent.mkdir(parents=True, exist_ok=True)
+                    plot_static_3d_scatter(sub_fsh, out3d, title=f"{tag} | {scenario} K={K} FSH: acc_mean over (alpha,gamma,keep)")
+
+                sub_base = df_base[(df_base["scenario"] == scenario) & (df_base["K"] == K)].copy()
+                if not sub_base.empty:
+                    outb = plots_dir / f"{scenario}_K{K}" / "baseline_acc_vs_alpha.png"
+                    outb.parent.mkdir(parents=True, exist_ok=True)
+                    plt.figure()
+                    sub_base = sub_base.sort_values("alpha")
+                    plt.plot(sub_base["alpha"].values, sub_base["acc_mean"].values, marker="o")
+                    plt.ylim(0.0, 1.0)
+                    plt.xlabel("alpha")
+                    plt.ylabel("acc_mean")
+                    plt.title(f"{tag} | {scenario} K={K} Baseline acc vs alpha")
+                    plt.tight_layout()
+                    plt.savefig(outb, dpi=220)
+                    plt.close()
+
+    # Plotly
+    plotly_entries: List[Tuple[str, Path]] = []
+    if plotly_enabled and PLOTLY_AVAILABLE:
+        for scenario in scenarios:
+            for K in Ks:
+                sub_fsh = df_fsh[(df_fsh["scenario"] == scenario) & (df_fsh["K"] == K)].copy()
+                sub_base = df_base[(df_base["scenario"] == scenario) & (df_base["K"] == K)].copy()
+
+                tag_dir = plots_plotly_dir / f"{scenario}_K{K}"
+                tag_dir.mkdir(parents=True, exist_ok=True)
+
+                if not sub_fsh.empty:
+                    # 3D scatter
+                    f3d = fig_plotly_3d_scatter(df_fsh, scenario, K)
+                    p3d = tag_dir / "fsh_scatter_3d.html"
+                    _write_plotly_html(f3d, p3d)
+                    plotly_entries.append((f"[FSH] 3D scatter | {tag} | {scenario} K={K}", p3d))
+
+                    # small-multiples heatmaps by alpha
+                    fhm = fig_plotly_small_multiples_heatmap(df_fsh, scenario, K)
+                    phm = tag_dir / "fsh_heatmaps_by_alpha.html"
+                    _write_plotly_html(fhm, phm)
+                    plotly_entries.append((f"[FSH] Heatmaps by alpha | {tag} | {scenario} K={K}", phm))
+
+                    # best-over-keep + argmax keep
+                    facc, fkeep = fig_plotly_best_over_keep(df_fsh, scenario, K)
+                    pacc = tag_dir / "fsh_best_acc_over_keep.html"
+                    pkeep = tag_dir / "fsh_argmax_keep.html"
+                    _write_plotly_html(facc, pacc)
+                    _write_plotly_html(fkeep, pkeep)
+                    plotly_entries.append((f"[FSH] Best acc over keep | {tag} | {scenario} K={K}", pacc))
+                    plotly_entries.append((f"[FSH] Argmax keep | {tag} | {scenario} K={K}", pkeep))
+
+                    # parallel coordinates
+                    fpc = fig_plotly_parallel_coords(df_fsh, scenario, K)
+                    ppc = tag_dir / "fsh_parallel_coords.html"
+                    _write_plotly_html(fpc, ppc)
+                    plotly_entries.append((f"[FSH] Parallel coords | {tag} | {scenario} K={K}", ppc))
+
+                if not sub_base.empty:
+                    fb = fig_plotly_baseline_acc_vs_alpha(df_base, scenario, K)
+                    pb = tag_dir / "baseline_acc_vs_alpha.html"
+                    _write_plotly_html(fb, pb)
+                    plotly_entries.append((f"[Baseline] acc vs alpha | {tag} | {scenario} K={K}", pb))
+
+        # index
+        index_html = plots_plotly_dir / "index.html"
+        write_plotly_index(index_html, plotly_entries)
+        print(f"[OK] Plotly index: {index_html}")
 
 
 # -----------------------------------------------------------------------------
@@ -1074,7 +1366,7 @@ def main():
     parser.add_argument("--gamma_points", type=int, default=15, help="linspace points for gamma in [0,1] (includes extremes)")
     parser.add_argument("--keep_points", type=int, default=15, help="linspace points for episode_keep in [0,1] (includes extremes)")
 
-    parser.add_argument("--seeds", type=int, default=1000)
+    parser.add_argument("--seeds", type=int, default=100)
     parser.add_argument("--workers", type=int, default=max(1, mp.cpu_count() - 1))
 
     parser.add_argument("--base_env_seed", type=int, default=12345)
@@ -1086,22 +1378,29 @@ def main():
 
     # outputs
     parser.add_argument("--outdir", type=str, default="", help="Default: ./log/<timestamp>")
-    parser.add_argument("--no_matplotlib", action="store_true", help="Disable static PNG outputs.")
-    parser.add_argument("--plotly", action="store_true", help="Enable Plotly interactive HTML outputs.")
+    parser.add_argument("--no_matplotlib", action="store_true", help="Disable PNG outputs (both per-setting + integration).")
+    parser.add_argument("--plotly", action="store_true", help="Enable Plotly interactive HTML outputs (per-setting + integration).")
+
+    # scenario zip behavior
+    # Default: zip+delete each scenario after it finishes to avoid blowing up disk.
+    # Use --no_zip_scenarios if you want to keep raw scenario folders (debugging).
+    parser.add_argument("--zip_scenarios", action="store_true", default=True,
+                        help="Zip each scenario folder then delete it (DEFAULT: ON). Use --no_zip_scenarios to disable.")
+    parser.add_argument("--no_zip_scenarios", action="store_true",
+                        help="Disable scenario zipping+deletion; keep raw scenario folders on disk.")
+    parser.add_argument("--keep_scenario_dirs", action="store_true",
+                        help="Keep raw scenario folder even when zipping (debug use).")
 
     args = parser.parse_args()
+
+    # normalize zip flags
+    if getattr(args, "no_zip_scenarios", False):
+        args.zip_scenarios = False
 
     ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     outdir = args.outdir.strip() or os.path.join(os.path.dirname(__file__), "log", ts)
     outdir_path = Path(outdir)
     outdir_path.mkdir(parents=True, exist_ok=True)
-
-    integ_dir = outdir_path / "integration"
-    plots_dir = integ_dir / "plots"
-    plots_plotly_dir = integ_dir / "plots_plotly"
-    integ_dir.mkdir(parents=True, exist_ok=True)
-    plots_dir.mkdir(parents=True, exist_ok=True)
-    plots_plotly_dir.mkdir(parents=True, exist_ok=True)
 
     Ks = [int(x) for x in args.Ks.split(",") if x.strip()]
 
@@ -1113,9 +1412,10 @@ def main():
             if s not in SCENARIOS:
                 raise ValueError(f"Unknown scenario '{s}'. Options: {SCENARIOS}")
 
+    # include extremes 0 and 1 (fallback behavior handles degeneracy)
     alpha_grid = np.linspace(0.0, 1.0, int(args.alpha_points))
-    gamma_grid = np.linspace(0.0, 1.0, int(args.gamma_points))
-    keep_grid = np.linspace(0.0, 1.0, int(args.keep_points))
+    gamma_grid = np.linspace(0.3, 1.0, int(args.gamma_points))
+    keep_grid = np.linspace(0.3, 1.0, int(args.keep_points))
 
     seeds = list(range(int(args.seeds)))
     base_seeds = {
@@ -1125,9 +1425,43 @@ def main():
         "mu": int(args.base_mu_seed),
     }
 
-    # Build configs
-    configs: List[AlgoConfig] = []
+    matplotlib_enabled = not bool(args.no_matplotlib)
+    plotly_enabled = bool(args.plotly)
+
+    # snapshot (global)
+    (outdir_path / "config.json").write_text(json.dumps({
+        "timestamp": ts,
+        "Ks": Ks,
+        "scenarios": scenarios,
+        "base_budget_16": args.base_budget_16,
+        "seeds": args.seeds,
+        "workers": args.workers,
+        "base_seeds": base_seeds,
+        "alpha_grid": alpha_grid.tolist(),
+        "gamma_grid": gamma_grid.tolist(),
+        "keep_grid": keep_grid.tolist(),
+        "use_class_impl": bool(args.use_class_impl),
+        "plotly_enabled": plotly_enabled,
+        "matplotlib_enabled": matplotlib_enabled,
+        "plotly_available": bool(PLOTLY_AVAILABLE),
+        "note": "No paper dueling used (dueling_means=None).",
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # multiprocessing primitives
+    ctx = mp.get_context("spawn")
+    manager = ctx.Manager()
+
+    global_summaries: List[Dict[str, Any]] = []
+
+    # ─────────────────────────────────────────────────────────────
+    # Scenario-by-scenario execution (parallel within each scenario)
+    # ─────────────────────────────────────────────────────────────
     for scenario in scenarios:
+        scenario_dir = outdir_path / scenario
+        scenario_dir.mkdir(parents=True, exist_ok=True)
+
+        # Build configs for THIS scenario only
+        configs: List[AlgoConfig] = []
         for K in Ks:
             # FSH grid (alpha,gamma,keep)
             for a in alpha_grid:
@@ -1156,169 +1490,133 @@ def main():
                     use_class_impl=False,
                 ))
 
-    # snapshot
-    (outdir_path / "config.json").write_text(json.dumps({
-        "timestamp": ts,
-        "Ks": Ks,
-        "scenarios": scenarios,
-        "base_budget_16": args.base_budget_16,
-        "seeds": args.seeds,
-        "workers": args.workers,
-        "base_seeds": base_seeds,
-        "alpha_grid": alpha_grid.tolist(),
-        "gamma_grid": gamma_grid.tolist(),
-        "keep_grid": keep_grid.tolist(),
-        "use_class_impl": bool(args.use_class_impl),
-        "num_configs": len(configs),
-        "plotly_enabled": bool(args.plotly),
-        "matplotlib_enabled": (not bool(args.no_matplotlib)),
-        "plotly_available": bool(PLOTLY_AVAILABLE),
-        "note": "No paper dueling used (dueling_means=None).",
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
+        # tasks
+        q = manager.Queue()
+        flags = {
+            "matplotlib_enabled": matplotlib_enabled,
+            "plotly_enabled": plotly_enabled,
+            "plotly_available": bool(PLOTLY_AVAILABLE),
+        }
+        tasks = [(cfg, seeds, base_seeds, str(outdir_path), q, flags) for cfg in configs]
+        total_units = len(configs) * len(seeds)
 
-    # multiprocessing by config
-    ctx = mp.get_context("spawn")
-    manager = ctx.Manager()
-    q = manager.Queue()
+        pool = ctx.Pool(processes=int(args.workers))
+        async_results = [pool.apply_async(run_one_config_worker, (t,)) for t in tasks]
+        pool.close()
 
-    tasks = [(cfg, seeds, base_seeds, str(outdir_path), q) for cfg in configs]
-    total_units = len(configs) * len(seeds)
+        done_cfg = 0
+        done_units = 0
 
-    pool = ctx.Pool(processes=int(args.workers))
-    async_results = [pool.apply_async(run_one_config_worker, (t,)) for t in tasks]
-    pool.close()
-
-    done_cfg = 0
-    done_units = 0
-
-    if tqdm is not None:
-        pbar = tqdm(total=total_units, desc="Running (config x seed)", dynamic_ncols=True)
-    else:
-        pbar = None
-        print(f"[INFO] total work units = {total_units}")
-
-    try:
-        while done_cfg < len(configs):
-            msg = q.get()
-            if msg == "DONE":
-                done_cfg += 1
-            else:
-                inc = int(msg)
-                done_units += inc
-                if pbar is not None:
-                    pbar.update(inc)
-                else:
-                    if done_units % max(1, total_units // 20) == 0:
-                        print(f"[PROGRESS] {done_units}/{total_units}")
-    finally:
-        if pbar is not None:
-            pbar.close()
-
-    pool.join()
-
-    # collect per-config summaries
-    summaries: List[Dict[str, Any]] = [ar.get() for ar in async_results]
-    summary_df = pd.DataFrame(summaries)
-
-    # global summary csv
-    summary_csv = integ_dir / "summary.csv"
-    summary_df.sort_values(["scenario", "K", "algo", "alpha", "gamma", "episode_keep"], na_position="last") \
-              .to_csv(summary_csv, index=False, encoding="utf-8-sig")
-
-    # Split for plotting
-    df_fsh = summary_df[summary_df["algo"] == "FSH"].copy()
-    df_base = summary_df[summary_df["algo"] == "BASELINE_NO_ELIM_MIX"].copy()
-
-    # ─────────────────────────────────────────────────────────────
-    # Static PNG plots (optional)
-    # ─────────────────────────────────────────────────────────────
-    if not args.no_matplotlib:
-        for scenario in scenarios:
-            for K in Ks:
-                sub_fsh = df_fsh[(df_fsh["scenario"] == scenario) & (df_fsh["K"] == K)].copy()
-                if not sub_fsh.empty:
-                    hm_dir = plots_dir / f"{scenario}_K{K}" / "heatmaps"
-                    plot_static_heatmaps_by_alpha(sub_fsh, hm_dir, title_prefix=f"{scenario} K={K} FSH")
-
-                    out3d = plots_dir / f"{scenario}_K{K}" / "scatter_3d.png"
-                    out3d.parent.mkdir(parents=True, exist_ok=True)
-                    plot_static_3d_scatter(sub_fsh, out3d, title=f"{scenario} K={K} FSH: acc_mean over (alpha,gamma,keep)")
-
-                sub_base = df_base[(df_base["scenario"] == scenario) & (df_base["K"] == K)].copy()
-                if not sub_base.empty:
-                    outb = plots_dir / f"{scenario}_K{K}" / "baseline_acc_vs_alpha.png"
-                    outb.parent.mkdir(parents=True, exist_ok=True)
-                    plt.figure()
-                    sub_base = sub_base.sort_values("alpha")
-                    plt.plot(sub_base["alpha"].values, sub_base["acc_mean"].values, marker="o")
-                    plt.ylim(0.0, 1.0)
-                    plt.xlabel("alpha")
-                    plt.ylabel("acc_mean")
-                    plt.title(f"{scenario} K={K} Baseline acc vs alpha")
-                    plt.tight_layout()
-                    plt.savefig(outb, dpi=220)
-                    plt.close()
-
-    # ─────────────────────────────────────────────────────────────
-    # Plotly interactive HTML outputs (recommended for analysis)
-    # ─────────────────────────────────────────────────────────────
-    plotly_entries: List[Tuple[str, Path]] = []
-
-    if args.plotly:
-        if not PLOTLY_AVAILABLE:
-            print("[WARN] Plotly is not installed. Install with: pip install plotly")
+        if tqdm is not None:
+            pbar = tqdm(total=total_units, desc=f"{scenario}: (config x seed)", dynamic_ncols=True)
         else:
-            for scenario in scenarios:
-                for K in Ks:
-                    sub_fsh = df_fsh[(df_fsh["scenario"] == scenario) & (df_fsh["K"] == K)].copy()
-                    sub_base = df_base[(df_base["scenario"] == scenario) & (df_base["K"] == K)].copy()
+            pbar = None
+            print(f"[INFO] scenario={scenario} total work units = {total_units}")
 
-                    tag_dir = plots_plotly_dir / f"{scenario}_K{K}"
-                    tag_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            while done_cfg < len(configs):
+                msg = q.get()
+                if msg == "DONE":
+                    done_cfg += 1
+                else:
+                    inc = int(msg)
+                    done_units += inc
+                    if pbar is not None:
+                        pbar.update(inc)
+                    else:
+                        if done_units % max(1, total_units // 20) == 0:
+                            print(f"[PROGRESS] scenario={scenario} {done_units}/{total_units}")
+        finally:
+            if pbar is not None:
+                pbar.close()
 
-                    if not sub_fsh.empty:
-                        # 3D scatter
-                        f3d = fig_plotly_3d_scatter(df_fsh, scenario, K)
-                        p3d = tag_dir / "fsh_scatter_3d.html"
-                        _write_plotly_html(f3d, p3d)
-                        plotly_entries.append((f"[FSH] 3D scatter | {scenario} K={K}", p3d))
+        pool.join()
 
-                        # small-multiples heatmaps by alpha
-                        fhm = fig_plotly_small_multiples_heatmap(df_fsh, scenario, K)
-                        phm = tag_dir / "fsh_heatmaps_by_alpha.html"
-                        _write_plotly_html(fhm, phm)
-                        plotly_entries.append((f"[FSH] Heatmaps by alpha | {scenario} K={K}", phm))
+        # collect summaries
+        scenario_summaries: List[Dict[str, Any]] = []
+        for ar in async_results:
+            try:
+                scenario_summaries.append(ar.get())
+            except Exception as e:
+                scenario_summaries.append({
+                    "config_id": "ERROR",
+                    "folder": "",
+                    "scenario": scenario,
+                    "K": None,
+                    "algo": None,
+                    "alpha": None,
+                    "gamma": None,
+                    "episode_keep": None,
+                    "n_seeds": 0,
+                    "acc_mean": float("nan"),
+                    "acc_std": float("nan"),
+                    "fallback_rate": float("nan"),
+                    "error_rate": float("nan"),
+                    "error": repr(e),
+                })
 
-                        # best-over-keep + argmax keep
-                        facc, fkeep = fig_plotly_best_over_keep(df_fsh, scenario, K)
-                        pacc = tag_dir / "fsh_best_acc_over_keep.html"
-                        pkeep = tag_dir / "fsh_argmax_keep.html"
-                        _write_plotly_html(facc, pacc)
-                        _write_plotly_html(fkeep, pkeep)
-                        plotly_entries.append((f"[FSH] Best acc over keep | {scenario} K={K}", pacc))
-                        plotly_entries.append((f"[FSH] Argmax keep | {scenario} K={K}", pkeep))
+        global_summaries.extend(scenario_summaries)
 
-                        # parallel coordinates
-                        fpc = fig_plotly_parallel_coords(df_fsh, scenario, K)
-                        ppc = tag_dir / "fsh_parallel_coords.html"
-                        _write_plotly_html(fpc, ppc)
-                        plotly_entries.append((f"[FSH] Parallel coords | {scenario} K={K}", ppc))
+        scenario_df = pd.DataFrame(scenario_summaries)
+        scenario_integ_dir = scenario_dir / "integration"
+        scenario_integ_dir.mkdir(parents=True, exist_ok=True)
 
-                    if not sub_base.empty:
-                        fb = fig_plotly_baseline_acc_vs_alpha(df_base, scenario, K)
-                        pb = tag_dir / "baseline_acc_vs_alpha.html"
-                        _write_plotly_html(fb, pb)
-                        plotly_entries.append((f"[Baseline] acc vs alpha | {scenario} K={K}", pb))
+        scenario_csv = scenario_integ_dir / "summary.csv"
+        scenario_df.sort_values(["K", "algo", "alpha", "gamma", "episode_keep"], na_position="last") \
+                   .to_csv(scenario_csv, index=False, encoding="utf-8-sig")
 
-            # index
-            index_html = plots_plotly_dir / "index.html"
-            write_plotly_index(index_html, plotly_entries)
-            print(f"[OK] Plotly index: {index_html}")
+        # scenario-level integration plots (over all settings in this scenario)
+        build_integration_outputs(
+            df_summary=scenario_df,
+            scenarios=[scenario],
+            Ks=Ks,
+            out_dir=scenario_dir,
+            tag=f"SCENARIO={scenario}",
+            matplotlib_enabled=matplotlib_enabled,
+            plotly_enabled=plotly_enabled,
+        )
 
-    print(f"[OK] log dir      : {outdir_path}")
-    print(f"[OK] summary.csv : {summary_csv}")
-    print(f"[OK] static plots: {plots_dir} (enabled={not args.no_matplotlib})")
-    print(f"[OK] plotly plots : {plots_plotly_dir} (enabled={bool(args.plotly)}; available={bool(PLOTLY_AVAILABLE)})")
+        # zip + delete scenario dir (default ON) to keep disk usage bounded
+        if args.zip_scenarios:
+            zip_root = outdir_path / "scenario_zips"
+            zip_path = zip_root / f"{scenario}.zip"
+            zip_dir(scenario_dir, zip_path)
+
+            # Only delete if the zip exists and is non-empty (safety)
+            if zip_path.exists() and zip_path.stat().st_size > 0:
+                print(f"[OK] scenario zipped: {zip_path}")
+                if not args.keep_scenario_dirs:
+                    shutil.rmtree(scenario_dir, ignore_errors=True)
+                    print(f"[OK] scenario dir deleted: {scenario_dir}")
+            else:
+                print(f"[WARN] scenario zip failed or empty, kept dir: {scenario_dir} (zip={zip_path})")
+
+    # ─────────────────────────────────────────────────────────────
+    # GLOBAL integration (all scenarios, all settings) — NOT ZIPPED
+    # ─────────────────────────────────────────────────────────────
+    integ_dir = outdir_path / "integration"
+    integ_dir.mkdir(parents=True, exist_ok=True)
+    global_df = pd.DataFrame(global_summaries)
+    global_csv = integ_dir / "summary.csv"
+    global_df.sort_values(["scenario", "K", "algo", "alpha", "gamma", "episode_keep"], na_position="last") \
+             .to_csv(global_csv, index=False, encoding="utf-8-sig")
+
+    build_integration_outputs(
+        df_summary=global_df,
+        scenarios=scenarios,
+        Ks=Ks,
+        out_dir=outdir_path,
+        tag="GLOBAL",
+        matplotlib_enabled=matplotlib_enabled,
+        plotly_enabled=plotly_enabled,
+    )
+
+    print(f"[OK] log dir          : {outdir_path}")
+    print(f"[OK] global summary   : {global_csv}")
+    print(f"[OK] global static    : {outdir_path / 'integration' / 'plots'} (enabled={matplotlib_enabled})")
+    print(f"[OK] global plotly    : {outdir_path / 'integration' / 'plots_plotly'} (enabled={plotly_enabled}; available={bool(PLOTLY_AVAILABLE)})")
+    if args.zip_scenarios:
+        print(f"[OK] scenario zips    : {outdir_path / 'scenario_zips'}")
     print("[INFO] No paper dueling used (dueling_means=None).")
 
 
