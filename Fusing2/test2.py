@@ -1358,15 +1358,15 @@ def build_integration_outputs(
 def main():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--base_budget_16", type=int, default=4000, help="Budget at K=16; scaled linearly for K=32/64.")
+    parser.add_argument("--base_budget_16", type=int, default=3000, help="Budget at K=16; scaled linearly for K=32/64.")
     parser.add_argument("--Ks", type=str, default="32,64", help="Comma-separated K list, e.g. 32,64")
     parser.add_argument("--scenarios", type=str, default="all", help=f"Comma-separated scenarios or 'all'. Options: {SCENARIOS}")
 
     parser.add_argument("--alpha_points", type=int, default=5, help="linspace points for alpha in [0,1] (includes extremes)")
-    parser.add_argument("--gamma_points", type=int, default=15, help="linspace points for gamma in [0,1] (includes extremes)")
-    parser.add_argument("--keep_points", type=int, default=15, help="linspace points for episode_keep in [0,1] (includes extremes)")
+    parser.add_argument("--gamma_points", type=int, default=7, help="linspace points for gamma in [0,1] (includes extremes)")
+    parser.add_argument("--keep_points", type=int, default=7, help="linspace points for episode_keep in [0,1] (includes extremes)")
 
-    parser.add_argument("--seeds", type=int, default=100)
+    parser.add_argument("--seeds", type=int, default=1000)
     parser.add_argument("--workers", type=int, default=max(1, mp.cpu_count() - 1))
 
     parser.add_argument("--base_env_seed", type=int, default=12345)

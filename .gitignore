@@ -1,5 +1,5 @@
 # Ignore local logs only (do not ignore the whole Fusing folder)
-Fusing/__pycache__
+Fusing/__pycache__/
 bin
 *.pyc
 
@@ -16,3 +16,4 @@ Fusing2/log/**
 ## keep config.json files (under Fusing2/log and elsewhere)
 !Fusing2/log/**/config.json
 !**/config.json
+!Fusing2/log/**/scenario_zips/*.zip
