@@ -10,8 +10,8 @@ Fusing2/log/**
 !Fusing2/log/**/
 
 ## keep integration folders and their contents under Fusing2/log
-!Fusing2/log/**/integration/
-!Fusing2/log/**/integration/**
+!Fusing2/log/**/integration/plots
+!Fusing2/log/**/integration/summary.csv
 
 ## keep config.json files (under Fusing2/log and elsewhere)
 !Fusing2/log/**/config.json
