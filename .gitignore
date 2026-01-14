@@ -17,3 +17,8 @@ Fusing2/log/**
 !Fusing2/log/**/config.json
 !**/config.json
 !Fusing2/log/**/scenario_zips/*.zip
+
+## new additions on results by test3.py
+!Fusing2/**/**/*.csv
+!Fusing2/**/**/*.png
+!Fusing2/**/logging.txt

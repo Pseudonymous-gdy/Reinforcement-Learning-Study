@@ -1,0 +1,36 @@
+[run] 20260112_193738 | run_dir=/home/dguo294/Reinforcement-Learning-Study/Fusing2/log/20260112_193738
+[cfg] Ks=[32] | Ts=[10000, 20000, 40000] | n_seeds=5000 | base_seed=12345 | n_cpu=383/384
+[grid] zetas=[0.0, 0.025, 0.05, 0.075, 0.1, 0.125, 0.15, 0.175, 0.2, 0.225, 0.25, 0.275, 0.3, 0.325, 0.35, 0.375, 0.4, 0.425, 0.45, 0.475, 0.5, 0.525, 0.55, 0.575, 0.6, 0.625, 0.65, 0.675, 0.7, 0.725, 0.75, 0.775, 0.8, 0.825, 0.85, 0.875, 0.9, 0.925, 0.95, 0.975, 1.0]
+[grid] alphas=[0.0, 0.0125, 0.025, 0.0375, 0.05, 0.0625, 0.075, 0.0875, 0.1, 0.1125, 0.125, 0.1375, 0.15, 0.1625, 0.175, 0.1875, 0.2, 0.2125, 0.225, 0.2375, 0.25, 0.2625, 0.275, 0.2875, 0.3, 0.3125, 0.325, 0.3375, 0.35, 0.3625, 0.375, 0.3875, 0.4, 0.4125, 0.425, 0.4375, 0.45, 0.4625, 0.475, 0.4875, 0.5]
+[scenarios] ['fusing_bump', 'uniform_gap', 'uniform_tiny_gap', 'unique_best_tiny', 'unique_best', 'gaps_increasing_tiny', 'gaps_increasing', 'gaps_decreasing_tiny', 'gaps_decreasing', 'random']
+[permute_mu] enabled=True | base_perm_seed=77777
+[done] fusing_bump | K=32 T=10000 | best acc_mean=0.919 @ (zeta=0.975, alpha=0.037) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] uniform_gap | K=32 T=10000 | best acc_mean=0.969 @ (zeta=1.000, alpha=0.000) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] uniform_tiny_gap | K=32 T=10000 | best acc_mean=0.228 @ (zeta=0.975, alpha=0.100) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] unique_best_tiny | K=32 T=10000 | best acc_mean=0.199 @ (zeta=1.000, alpha=0.000) | worst acc_mean=0.026 @ (zeta=0.000, alpha=0.037) | clamp_rate_best=0.000
+[done] unique_best | K=32 T=10000 | best acc_mean=1.000 @ (zeta=0.900, alpha=0.000) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] gaps_increasing_tiny | K=32 T=10000 | best acc_mean=0.137 @ (zeta=0.925, alpha=0.062) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] gaps_increasing | K=32 T=10000 | best acc_mean=0.319 @ (zeta=1.000, alpha=0.000) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] gaps_decreasing_tiny | K=32 T=10000 | best acc_mean=0.446 @ (zeta=0.950, alpha=0.037) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] gaps_decreasing | K=32 T=10000 | best acc_mean=0.987 @ (zeta=0.975, alpha=0.037) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] random | K=32 T=10000 | best acc_mean=1.000 @ (zeta=0.975, alpha=0.000) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] fusing_bump | K=32 T=20000 | best acc_mean=0.980 @ (zeta=1.000, alpha=0.000) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] uniform_gap | K=32 T=20000 | best acc_mean=0.994 @ (zeta=0.925, alpha=0.037) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] uniform_tiny_gap | K=32 T=20000 | best acc_mean=0.291 @ (zeta=0.975, alpha=0.000) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] unique_best_tiny | K=32 T=20000 | best acc_mean=0.304 @ (zeta=0.975, alpha=0.062) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] unique_best | K=32 T=20000 | best acc_mean=1.000 @ (zeta=0.400, alpha=0.188) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] gaps_increasing_tiny | K=32 T=20000 | best acc_mean=0.158 @ (zeta=0.975, alpha=0.188) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] gaps_increasing | K=32 T=20000 | best acc_mean=0.367 @ (zeta=0.975, alpha=0.062) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] gaps_decreasing_tiny | K=32 T=20000 | best acc_mean=0.556 @ (zeta=0.975, alpha=0.037) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] gaps_decreasing | K=32 T=20000 | best acc_mean=0.999 @ (zeta=1.000, alpha=0.000) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] random | K=32 T=20000 | best acc_mean=1.000 @ (zeta=0.625, alpha=0.000) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] fusing_bump | K=32 T=40000 | best acc_mean=0.998 @ (zeta=0.950, alpha=0.037) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] uniform_gap | K=32 T=40000 | best acc_mean=1.000 @ (zeta=0.975, alpha=0.037) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] uniform_tiny_gap | K=32 T=40000 | best acc_mean=0.382 @ (zeta=1.000, alpha=0.000) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] unique_best_tiny | K=32 T=40000 | best acc_mean=0.473 @ (zeta=1.000, alpha=0.000) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] unique_best | K=32 T=40000 | best acc_mean=1.000 @ (zeta=0.000, alpha=0.500) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] gaps_increasing_tiny | K=32 T=40000 | best acc_mean=0.179 @ (zeta=0.875, alpha=0.100) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] gaps_increasing | K=32 T=40000 | best acc_mean=0.422 @ (zeta=0.950, alpha=0.000) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] gaps_decreasing_tiny | K=32 T=40000 | best acc_mean=0.678 @ (zeta=1.000, alpha=0.000) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[done] random | K=32 T=40000 | best acc_mean=1.000 @ (zeta=0.275, alpha=0.350) | worst acc_mean=0.027 @ (zeta=0.000, alpha=0.000) | clamp_rate_best=0.000
+[saved] run_dir=/home/dguo294/Reinforcement-Learning-Study/Fusing2/log/20260112_193738
