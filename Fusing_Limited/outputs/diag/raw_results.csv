@@ -1,0 +1,2 @@
+case,regime,delta,seed_id,success,error,error_type,error_message,best_arm_true,best_arm_hat,T_r,T_d,T_total,num_phases,T_burn_r,T_burn_d,T_main_r,T_main_d,p_D,final_gap_hat,stop_stat
+unit,reward-only,0.05,0,True,False,,,0,0,4588465,0,4588465,1,30,0,4588435,0,0.0,0.35,-3689550.9362315424

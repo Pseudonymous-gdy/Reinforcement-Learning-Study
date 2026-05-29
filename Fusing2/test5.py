@@ -265,7 +265,7 @@ def main():
     Cs = [int(x) for x in args.Cs.split(",") if x.strip()]
     scen_list = [x.strip() for x in args.scenarios.split(",") if x.strip() != ""]
 
-    omega_Rs = list(np.linspace(0.5, 1.5, 11))
+    omega_Rs = list(np.linspace(0.7, 2.9, 12))
     zetas = list(np.linspace(0.0, 1.0, 21))
 
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S_test5")
