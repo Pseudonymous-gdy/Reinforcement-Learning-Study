@@ -1,4 +1,5 @@
 import numpy as np
+import time
 from .instances import make_unit_instance, make_special_instance, make_general_instance
 from .feedback import sample_reward, sample_duel, sigmoid
 from .mle import fit_joint_mle
@@ -24,7 +25,7 @@ def build_action_directions(X, regime):
     return actions, V
 
 
-def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None):
+def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None, progress_emitter=None):
     rng = np.random.RandomState(seed)
     K, d = X.shape[0], X.shape[1]
     actions, V = build_action_directions(X, regime)
@@ -98,7 +99,8 @@ def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None):
         # phase params
         delta_m = 6 * delta / (np.pi ** 2 * m ** 2)
         bar_x_m = d * np.log(5) + np.log((np.pi ** 2 * m ** 2) / (3 * delta))
-        eps_m = 2 ** (-m)
+        eps_m = 1.0 / np.sqrt(m + 3)
+        eps_m = max(eps_m, 1e-6)
 
         # fit MLE
         theta_hat, success, status, obj = fit_joint_mle(observations, d, theta_init=theta_hat, ridge=ridge_lambda)
@@ -121,30 +123,96 @@ def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None):
         if d is None:
             raise RuntimeError
         r_zeta = d ** 2
-        n_m = int(np.ceil(max(r_zeta, (1 + zeta) * C_safe * bar_x_m * L, (1 + zeta) * 128 * np.e ** 3 * bar_x_m * T / (eps_m ** 2))))
-        # do not cap n_m by an artificial budget; allow large runs for fixed-confidence setting
-
-        # rounding
-        n_a, seq = deterministic_round(n_m, q_m, rng)
-        # execute sequence with progress
-        if tqdm is not None:
-            seq_iter = tqdm(seq, desc=f'Phase {m} exec', leave=False)
+        # compute candidate phase size components
+        cand1 = r_zeta
+        cand2 = (1 + zeta) * C_safe * bar_x_m * L
+        # avoid dividing by exact zero eps_m although eps_m formula is preserved
+        denom = (eps_m ** 2)
+        cand3 = (1 + zeta) * 128 * np.e ** 3 * bar_x_m * T / denom if denom != 0 else np.inf
+        raw_nm = max(cand1, cand2, cand3)
+        # numeric guards: if raw_nm is not finite or extremely large, cap to a safe maximum
+        MAX_NM = 50000
+        if not np.isfinite(raw_nm):
+            n_m = int(MAX_NM)
+            capped = True
         else:
-            seq_iter = seq
-        for idx in seq_iter:
-            a = actions[idx]
-            if a[0] == 'R':
-                y = sample_reward(a[1], X, theta_star, rng)
-                observations.append({'rho': 'R', 'v': X[a[1]], 'y': y})
-                T_r_main += 1
+            if raw_nm > MAX_NM:
+                n_m = int(MAX_NM)
+                capped = True
             else:
-                y = sample_duel(a[1], a[2], X, theta_star, rng)
-                observations.append({'rho': 'D', 'v': X[a[1]] - X[a[2]], 'y': y})
-                T_d_main += 1
-            total_samples += 1
+                n_m = int(np.ceil(raw_nm))
+                capped = False
+
+        if capped:
+            print(f"Warning: n_m capped to {n_m} (raw={raw_nm}) to avoid excessive allocation")
+
+        # deterministic rounding by counts (avoid building huge seq in memory)
+        q_arr = np.asarray(q_m, dtype=float)
+        tilde = n_m * q_arr
+        n_a = np.floor(tilde).astype(int)
+        rem = int(n_m - np.sum(n_a))
+        if rem > 0:
+            frac = tilde - np.floor(tilde)
+            idx = np.argsort(-frac)
+            for k in range(min(rem, len(idx))):
+                n_a[idx[k]] += 1
+        seq = None
+        # execute by action counts (batch sampling)
+        for a_idx, count in enumerate(n_a):
+            if count <= 0:
+                continue
+            a = actions[a_idx]
+            if a[0] == 'R':
+                ys = rng.normal(loc=(X[a[1]] @ theta_star), scale=1.0, size=count)
+                # extend observations in batch
+                observations.extend([{'rho': 'R', 'v': X[a[1]], 'y': float(y)} for y in ys])
+                T_r_main += int(count)
+            else:
+                # duel sampling: binomial wins
+                p = 1.0 / (1.0 + np.exp(-float((X[a[1]] - X[a[2]]) @ theta_star)))
+                wins = rng.binomial(n=int(count), p=p)
+                # store duel observations as wins/individuals
+                # approximate by appending wins times success and failures
+                if wins > 0:
+                    observations.extend([{'rho': 'D', 'v': X[a[1]] - X[a[2]], 'y': 1.0}] * int(wins))
+                if count - wins > 0:
+                    observations.extend([{'rho': 'D', 'v': X[a[1]] - X[a[2]], 'y': 0.0}] * int(count - wins))
+                T_d_main += int(count)
+            total_samples += int(count)
 
         # stopping check
         theta_hat, success, status, obj = fit_joint_mle(observations, d, theta_init=theta_hat, ridge=ridge_lambda)
+        # emit phase_end event if emitter provided
+        if progress_emitter is not None:
+            try:
+                evt = {
+                    'timestamp': time.time(),
+                    'event': 'phase_end',
+                    'case': None,
+                    'regime': regime,
+                    'delta': delta,
+                    'seed_id': seed,
+                    'phase': m,
+                    'T_r': T_r_burn + T_r_main,
+                    'T_d': T_d_burn + T_d_main,
+                    'T_total': T_r_burn + T_r_main + T_d_burn + T_d_main,
+                    'n_m': n_m,
+                    'epsilon_m': eps_m,
+                    'bar_x_m': bar_x_m,
+                    'q_reward_mass': float(np.sum([q for (q, a) in zip(q_m, actions) if a[0] == 'R'])) if len(q_m)>0 else 0.0,
+                    'q_duel_mass': float(np.sum([q for (q, a) in zip(q_m, actions) if a[0] == 'D'])) if len(q_m)>0 else 0.0,
+                    'p_D_so_far': (T_d_burn + T_d_main) / max(1, (T_r_burn + T_r_main + T_d_burn + T_d_main)),
+                    'mle_time_sec': 0.0,
+                    'design_time_sec': 0.0,
+                    'sampling_time_sec': 0.0,
+                    'stopping_time_sec': 0.0,
+                    'stop_stat': obj,
+                    'best_arm_hat': int(np.argmax(X @ theta_hat)),
+                    'elapsed_sec': 0.0,
+                }
+                progress_emitter(evt)
+            except Exception:
+                pass
         # empirical fisher
         H = np.zeros((d, d))
         for obs in observations:

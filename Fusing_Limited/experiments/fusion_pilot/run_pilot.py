@@ -18,6 +18,8 @@ import multiprocessing
 import traceback
 import threading
 import time
+import json
+import queue
 from .instances import make_unit_instance, make_special_instance, make_general_instance
 from .algorithm import run_phased_mixed_xy_bai
 from .config import delta_values, omega_R_values
@@ -38,8 +40,12 @@ def stable_int_seed(*items, modulo=2 ** 32 - 1):
     return int(digest[:16], 16) % modulo
 
 
-def init_worker():
-    # ensure BLAS/OMP thread limits in worker processes
+_PROGRESS_QUEUE = None
+
+def init_worker(progress_queue):
+    # set BLAS/OMP limits and register the progress queue for workers
+    global _PROGRESS_QUEUE
+    _PROGRESS_QUEUE = progress_queue
     os.environ['OMP_NUM_THREADS'] = '1'
     os.environ['OPENBLAS_NUM_THREADS'] = '1'
     os.environ['MKL_NUM_THREADS'] = '1'
@@ -67,32 +73,22 @@ def generate_instance(case_name, seed_id, base_seed=20260601):
 
 def worker_run(spec: RunSpec):
     try:
-        # heartbeat: write periodic timestamp so the main process can observe liveness
-        outdir_env = os.environ.get('FUSION_PILOT_OUTDIR', None)
-        if outdir_env is None:
-            hb_dir = os.path.join('/tmp', 'fusion_pilot_heartbeats')
-        else:
-            hb_dir = os.path.join(outdir_env, 'worker_heartbeats')
-        try:
-            os.makedirs(hb_dir, exist_ok=True)
-        except Exception:
-            hb_dir = '/tmp'
-
-        stop_hb = threading.Event()
-
-        def _hb_writer():
-            name = f"{spec.case_name}__{spec.regime}__{spec.delta}__{spec.seed_id}__pid{os.getpid()}"
-            path = os.path.join(hb_dir, name + '.heartbeat')
-            while not stop_hb.is_set():
-                try:
-                    with open(path, 'w') as fh:
-                        fh.write(str(time.time()))
-                except Exception:
-                    pass
-                stop_hb.wait(2.0)
-
-        hb_thread = threading.Thread(target=_hb_writer, daemon=True)
-        hb_thread.start()
+        # emit run_start event
+        start_ts = time.time()
+        if _PROGRESS_QUEUE is not None:
+            try:
+                _PROGRESS_QUEUE.put_nowait({
+                    'timestamp': start_ts,
+                    'event': 'run_start',
+                    'case': spec.case_name,
+                    'regime': spec.regime,
+                    'delta': spec.delta,
+                    'seed_id': spec.seed_id,
+                    'worker_pid': os.getpid(),
+                    'elapsed_sec': 0.0,
+                })
+            except queue.Full:
+                pass
         base = spec.base_seed
         # deterministic instance generation (same across regimes)
         X, theta, i_star, meta = generate_instance(spec.case_name, spec.seed_id, base_seed=base)
@@ -103,8 +99,24 @@ def worker_run(spec: RunSpec):
         regime_map = {'reward-only': 'reward_only', 'duel-only': 'duel_only', 'fusion': 'fusion'}
         alg_regime = regime_map.get(spec.regime, spec.regime)
 
+        # prepare progress_emitter for algorithm phases
+        def _emit(ev):
+            if _PROGRESS_QUEUE is None:
+                return
+            try:
+                # fill in identifying info
+                ev['case'] = spec.case_name
+                ev['regime'] = spec.regime
+                ev['delta'] = spec.delta
+                ev['seed_id'] = spec.seed_id
+                ev['worker_pid'] = os.getpid()
+                ev['timestamp'] = time.time()
+                _PROGRESS_QUEUE.put_nowait(ev)
+            except Exception:
+                pass
+
         # call the algorithm (it internally uses the provided seed for RNG)
-        res = run_phased_mixed_xy_bai(X, theta, spec.delta, alg_regime, run_seed, config=None)
+        res = run_phased_mixed_xy_bai(X, theta, spec.delta, alg_regime, run_seed, config=None, progress_emitter=_emit)
 
         out = {
             'case': spec.case_name,
@@ -130,40 +142,54 @@ def worker_run(spec: RunSpec):
             # compute scores on true theta and report best-minus-second gap
             'final_gap_hat': float(np.sort(X @ theta)[-1] - np.sort(X @ theta)[-2]) if X.shape[0] > 1 else 0.0,
             'stop_stat': float(res.get('final_loglik', 0.0)),
+            'elapsed_sec': time.time() - start_ts,
         }
         return out
     except Exception as e:
-            tb = traceback.format_exc()
-            # include traceback in error_message for diagnostics
-            return {
-                'case': spec.case_name,
-                'regime': spec.regime,
-                'delta': spec.delta,
-                'seed_id': spec.seed_id,
-                'success': False,
-                'error': True,
-                'error_type': type(e).__name__,
-                'error_message': f"{str(e)}\n{tb}",
-                'best_arm_true': None,
-                'best_arm_hat': None,
-                'T_r': 0,
-                'T_d': 0,
-                'T_total': 0,
-                'num_phases': 0,
-                'T_burn_r': 0,
-                'T_burn_d': 0,
-                'T_main_r': 0,
-                'T_main_d': 0,
-                'p_D': 0.0,
-                'final_gap_hat': 0.0,
-                'stop_stat': 0.0,
-            }
-    finally:
-        try:
-            stop_hb.set()
-            hb_thread.join(timeout=1.0)
-        except Exception:
-            pass
+        tb = traceback.format_exc()
+        # include traceback in error_message for diagnostics
+        err_out = {
+            'case': spec.case_name,
+            'regime': spec.regime,
+            'delta': spec.delta,
+            'seed_id': spec.seed_id,
+            'success': False,
+            'error': True,
+            'error_type': type(e).__name__,
+            'error_message': f"{str(e)}\n{tb}",
+            'best_arm_true': None,
+            'best_arm_hat': None,
+            'T_r': 0,
+            'T_d': 0,
+            'T_total': 0,
+            'num_phases': 0,
+            'T_burn_r': 0,
+            'T_burn_d': 0,
+            'T_main_r': 0,
+            'T_main_d': 0,
+            'p_D': 0.0,
+            'final_gap_hat': 0.0,
+            'stop_stat': 0.0,
+            'elapsed_sec': time.time() - start_ts,
+        }
+        # emit run_error
+        if _PROGRESS_QUEUE is not None:
+            try:
+                _PROGRESS_QUEUE.put_nowait({
+                    'timestamp': time.time(),
+                    'event': 'run_error',
+                    'case': spec.case_name,
+                    'regime': spec.regime,
+                    'delta': spec.delta,
+                    'seed_id': spec.seed_id,
+                    'worker_pid': os.getpid(),
+                    'error_type': err_out['error_type'],
+                    'error_message': err_out['error_message'],
+                    'elapsed_sec': err_out['elapsed_sec'],
+                })
+            except queue.Full:
+                pass
+        return err_out
 
 
 def run(seeds=20, outdir='outputs/fusion_pilot_smoke', num_workers=None, chunksize=1, write_every=100, resume=False, overwrite=False, debug=False):
@@ -215,21 +241,106 @@ def run(seeds=20, outdir='outputs/fusion_pilot_smoke', num_workers=None, chunksi
         df = pd.DataFrame(buf)
         df.to_csv(path, mode='a', header=header, index=False)
 
-    # Use multiprocessing.Pool with spawn start method and initializer to
-    # reduce risk of forking large memory and to set per-worker env vars.
+    # Use multiprocessing.Pool with chosen start method and initializer to
+    # centralize progress reporting.
     try:
         multiprocessing.set_start_method('spawn', force=True)
     except RuntimeError:
-        # start method already set
         pass
 
-    # export outdir for worker heartbeat files
-    os.environ['FUSION_PILOT_OUTDIR'] = outdir
+    mp_ctx = multiprocessing.get_context('spawn')
+    progress_queue = mp_ctx.Queue(maxsize=10000)
 
-    pool = multiprocessing.Pool(processes=num_workers, initializer=init_worker, maxtasksperchild=50)
+    # start progress writer thread in main process
+    progress_events_path = os.path.join(outdir, 'progress_events.jsonl')
+    progress_snapshot_path = os.path.join(outdir, 'progress_snapshot.json')
+    prog_stop = threading.Event()
+
+    def progress_writer_loop(queue_obj, events_path, snapshot_path, snapshot_every=10, print_every=30):
+        # maintain simple stats
+        stats = {
+            'total_runs': len(run_specs),
+            'submitted_runs': 0,
+            'completed_runs': 0,
+            'error_runs': 0,
+            'running_runs': 0,
+            'by_key': {},
+        }
+        last_snapshot = time.time()
+        last_print = time.time()
+        # open file for append
+        with open(events_path, 'a') as ef:
+            while not prog_stop.is_set():
+                try:
+                    ev = queue_obj.get(timeout=1.0)
+                except Exception:
+                    ev = None
+                if ev is not None:
+                    ef.write(json.dumps(ev, default=str) + '\n')
+                    ef.flush()
+                    # update basic stats
+                    key = (ev.get('case'), ev.get('regime'), float(ev.get('delta') or 0.0))
+                    if ev.get('event') == 'run_start':
+                        stats['running_runs'] += 1
+                        stats['submitted_runs'] += 1
+                        stats['by_key'].setdefault(key, {'completed': 0, 'errors': 0, 'running': 0})
+                        stats['by_key'][key]['running'] += 1
+                    elif ev.get('event') == 'run_end':
+                        stats['running_runs'] = max(0, stats['running_runs'] - 1)
+                        stats['completed_runs'] += 1
+                        stats['by_key'].setdefault(key, {'completed': 0, 'errors': 0, 'running': 0})
+                        stats['by_key'][key]['running'] = max(0, stats['by_key'][key]['running'] - 1)
+                        stats['by_key'][key]['completed'] += 1
+                    elif ev.get('event') == 'run_error':
+                        stats['running_runs'] = max(0, stats['running_runs'] - 1)
+                        stats['error_runs'] += 1
+                        stats['by_key'].setdefault(key, {'completed': 0, 'errors': 0, 'running': 0})
+                        stats['by_key'][key]['running'] = max(0, stats['by_key'][key]['running'] - 1)
+                        stats['by_key'][key]['errors'] += 1
+                now = time.time()
+                if now - last_snapshot >= snapshot_every:
+                    # write snapshot atomically
+                    snap = {
+                        'total_runs': stats['total_runs'],
+                        'submitted_runs': stats['submitted_runs'],
+                        'completed_runs': stats['completed_runs'],
+                        'error_runs': stats['error_runs'],
+                        'running_runs': stats['running_runs'],
+                        'completion_percent': (stats['completed_runs'] / max(1, stats['total_runs'])) * 100.0,
+                    }
+                    tmp = snapshot_path + '.tmp'
+                    try:
+                        with open(tmp, 'w') as sf:
+                            json.dump(snap, sf)
+                        os.replace(tmp, snapshot_path)
+                    except Exception:
+                        pass
+                    last_snapshot = now
+                if now - last_print >= print_every:
+                    print(f"completed={stats['completed_runs']}/{stats['total_runs']} errors={stats['error_runs']} running={stats['running_runs']}")
+                    last_print = now
+
+    prog_thread = threading.Thread(target=progress_writer_loop, args=(progress_queue, progress_events_path, progress_snapshot_path, 10, 30), daemon=True)
+    prog_thread.start()
+
+    pool = mp_ctx.Pool(processes=num_workers, initializer=init_worker, initargs=(progress_queue,), maxtasksperchild=50)
     try:
         # use imap_unordered to stream results as they complete
-        for res in pool.imap_unordered(worker_run, run_specs, chunksize):
+        # filter completed if resume requested
+        run_specs_to_execute = []
+        if resume and os.path.exists(out_raw):
+            existing = pd.read_csv(out_raw)
+            for _, r in existing.iterrows():
+                if not r.get('error', False):
+                    completed_keys.add((r['case'], r['regime'], float(r['delta']), int(r['seed_id'])))
+        for spec in run_specs:
+            key = (spec.case_name, spec.regime, spec.delta, spec.seed_id)
+            if key in completed_keys:
+                pbar.update(1)
+                continue
+            run_specs_to_execute.append(spec)
+
+        for res in pool.imap_unordered(worker_run, run_specs_to_execute, chunksize):
             # skip completed keys if res corresponds to already completed
             key = (res.get('case'), res.get('regime'), float(res.get('delta') or 0.0), int(res.get('seed_id') or 0))
             if key in completed_keys:
@@ -237,8 +348,21 @@ def run(seeds=20, outdir='outputs/fusion_pilot_smoke', num_workers=None, chunksi
                 continue
             if res.get('error', False):
                 err_buffer.append(res)
+                # also emit run_end or run_error events
+                if _PROGRESS_QUEUE is not None:
+                    try:
+                        ev = {'timestamp': time.time(), 'event': 'run_end' if not res.get('error') else 'run_error', 'case': res.get('case'), 'regime': res.get('regime'), 'delta': res.get('delta'), 'seed_id': res.get('seed_id'), 'worker_pid': os.getpid(), 'elapsed_sec': res.get('elapsed_sec', 0.0)}
+                        progress_queue.put_nowait(ev)
+                    except Exception:
+                        pass
             else:
                 buffer.append(res)
+                if _PROGRESS_QUEUE is not None:
+                    try:
+                        ev = {'timestamp': time.time(), 'event': 'run_end', 'case': res.get('case'), 'regime': res.get('regime'), 'delta': res.get('delta'), 'seed_id': res.get('seed_id'), 'worker_pid': os.getpid(), 'elapsed_sec': res.get('elapsed_sec', 0.0)}
+                        progress_queue.put_nowait(ev)
+                    except Exception:
+                        pass
             if len(buffer) >= write_every:
                 flush_buffer(buffer, out_raw, write_header)
                 write_header = False
