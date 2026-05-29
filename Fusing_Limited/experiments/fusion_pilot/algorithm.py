@@ -5,7 +5,7 @@ from .feedback import sample_reward, sample_duel, sigmoid
 from .mle import fit_joint_mle
 from .design import actions_from_X, compute_Jm, solve_design, B_from_q, design_objective_and_stats, fisher_increment
 from .rounding import deterministic_round
-from .config import burnin_repeats, ridge_lambda, projection_tol, zeta, C_safe
+from .config import burnin_repeats, ridge_lambda, projection_tol, zeta, C_safe, T_max
 
 try:
     from tqdm import tqdm
@@ -36,10 +36,13 @@ def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None, pro
     design_solver = None
     debug_cap_n_m = None
     verbose = False
+    t_max = T_max
     if isinstance(config, dict):
         design_solver = config.get('design_solver', None)
         debug_cap_n_m = config.get('debug_cap_n_m', None)
         verbose = bool(config.get('verbose', False))
+        if 'T_max' in config:
+            t_max = config.get('T_max')
 
     # build actions and measurement vectors
     actions = actions_from_X(X, regime)
@@ -113,6 +116,8 @@ def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None, pro
     final_phase = 0
     m = 1
     i_hat = int(np.argmax(X @ theta_hat))
+    stopped = True
+    stop_fail = False
 
     # precompute Y_id function (depends on span of X_mix which changes with theta_hat)
     def compute_identifiable_targets(action_vs_local, theta_local):
@@ -190,10 +195,22 @@ def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None, pro
                 raise RuntimeError(f"Non-finite phase size raw_nm={raw_nm}")
             n_m = int(np.ceil(raw_nm))
 
+        # enforce T_max if configured
+        n_m_exec = n_m
+        forced_stop = False
+        if t_max is not None:
+            remaining = int(t_max - total_samples)
+            if remaining <= 0:
+                n_m_exec = 0
+                forced_stop = True
+            elif total_samples + n_m > t_max:
+                n_m_exec = remaining
+                forced_stop = True
+
         # rounding -> get counts only
         q_arr = np.asarray(q_m, dtype=float)
-        n_a = deterministic_round(n_m, q_arr, rng=rng, return_seq=False)
-        rounding_l1 = float(np.sum(np.abs(n_a / max(1, n_m) - q_arr)))
+        n_a = deterministic_round(n_m_exec, q_arr, rng=rng, return_seq=False)
+        rounding_l1 = float(np.sum(np.abs(n_a / max(1, n_m_exec) - q_arr)))
 
         # batch sampling per action
         t2 = time.time()
@@ -305,6 +322,10 @@ def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None, pro
         if verbose:
             print(f"Phase {m} finished: total_samples={total_samples}, n_m={n_m}, design_status={design_status}, mle_status={mle_status}")
 
+        if forced_stop:
+            stopped = False
+            stop_fail = True
+            break
         if ok:
             break
         m += 1
@@ -318,8 +339,8 @@ def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None, pro
         error=False,
         error_type="",
         error_message="",
-        stopped=True,
-        stop_fail=False,
+        stopped=stopped,
+        stop_fail=stop_fail,
         T_r=int(T_r),
         T_d=int(T_d),
         T_total=int(T_r + T_d),

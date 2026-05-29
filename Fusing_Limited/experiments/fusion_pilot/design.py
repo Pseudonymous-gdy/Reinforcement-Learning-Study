@@ -110,7 +110,10 @@ def design_objective_and_stats(q, actions, X, theta_hat, Y_id, bar_x_m, eps_m, C
         for y in Y_id:
             T = max(T, float(y @ (Bpinv @ y)))
 
-    objective = max(C_safe * bar_x_m * L, 128 * np.e ** 3 * bar_x_m * T / (eps_m ** 2))
+    if not np.isfinite(L) or not np.isfinite(T):
+        objective = 1e30
+    else:
+        objective = max(C_safe * bar_x_m * L, 128 * np.e ** 3 * bar_x_m * T / (eps_m ** 2))
     stats = dict(L=L, T=T, objective=objective, rank_B=rank_B, min_eig_B=min_eig, cond_B=cond_B)
     return objective, stats
 
@@ -140,14 +143,20 @@ def solve_design(actions, X, theta_hat, Y_id, bar_x_m, eps_m, zeta, C_safe, solv
     if solver == 'slsqp':
         # constrained minimization over simplex
         def obj(q_var):
-            q_var = np.maximum(q_var, 0.0)
-            q_var = q_var / max(1e-30, np.sum(q_var))
+            # keep objective defined for SLSQP; return large value if outside simplex
+            if np.any(q_var < -1e-8):
+                return 1e30
+            s = np.sum(q_var)
+            if not np.isfinite(s) or abs(s - 1.0) > 1e-4:
+                return 1e30
             val, _ = design_objective_and_stats(q_var, actions, X, theta_hat, Y_id, bar_x_m, eps_m, C_safe)
+            if not np.isfinite(val):
+                return 1e30
             return float(val)
 
         cons = ({'type': 'eq', 'fun': lambda qvar: np.sum(qvar) - 1.0},)
         bounds = [(0.0, 1.0) for _ in range(n)]
-        res = minimize(obj, q, bounds=bounds, constraints=cons, method='SLSQP', options={'maxiter': 200})
+        res = minimize(obj, q, bounds=bounds, constraints=cons, method='SLSQP', options={'maxiter': 200, 'ftol': 1e-8})
         if res.success:
             q_opt = np.maximum(res.x, 0.0)
             if np.sum(q_opt) <= 0:
