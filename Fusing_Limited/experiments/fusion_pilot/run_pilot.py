@@ -72,9 +72,9 @@ def generate_instance(case_name, seed_id, base_seed=20260601):
 
 
 def worker_run(spec: RunSpec, design_solver=None, debug_cap_n_m=None, verbose=False):
+    start_ts = time.time()
     try:
         # emit run_start event
-        start_ts = time.time()
         if _PROGRESS_QUEUE is not None:
             try:
                 _PROGRESS_QUEUE.put_nowait({
@@ -122,30 +122,42 @@ def worker_run(spec: RunSpec, design_solver=None, debug_cap_n_m=None, verbose=Fa
         }
         res = run_phased_mixed_xy_bai(X, theta, spec.delta, alg_regime, run_seed, config=config, progress_emitter=_emit)
 
+        p_d = float(res.get('p_D', 0.0))
+        if spec.regime == 'reward-only':
+            p_d = 0.0
+        elif spec.regime == 'duel-only':
+            p_d = 1.0
+
         out = {
-            'case': spec.case_name,
+            'case_name': spec.case_name,
             'regime': spec.regime,
             'delta': spec.delta,
-            'seed_id': spec.seed_id,
+            'seed': spec.seed_id,
+            'instance_attempts': int(meta.get('attempts', 1)),
+            'K': int(meta.get('K', X.shape[0])),
+            'd': int(meta.get('d', X.shape[1])),
+            'i_star': int(res.get('i_star', i_star)),
+            'i_hat': int(res.get('i_hat', -1)),
             'success': bool(res.get('success', False)),
+            'stopped': bool(res.get('stopped', True)),
+            'stop_fail': bool(res.get('stop_fail', False)),
             'error': False,
             'error_type': '',
             'error_message': '',
-            'best_arm_true': int(res.get('i_star', i_star)),
-            'best_arm_hat': int(res.get('i_hat', -1)),
             'T_r': int(res.get('T_r', 0)),
             'T_d': int(res.get('T_d', 0)),
             'T_total': int(res.get('T_total', 0)),
-            'num_phases': int(res.get('final_phase', 0)),
-            'T_burn_r': int(res.get('T_r_burn', 0)),
-            'T_burn_d': int(res.get('T_d_burn', 0)),
-            'T_main_r': int(res.get('T_r_main', 0)),
-            'T_main_d': int(res.get('T_d_main', 0)),
-            'p_D': float(res.get('p_D', 0.0)),
-            # final_gap_hat: true gap between best and second-best under true theta
-            # compute scores on true theta and report best-minus-second gap
-            'final_gap_hat': float(np.sort(X @ theta)[-1] - np.sort(X @ theta)[-2]) if X.shape[0] > 1 else 0.0,
-            'stop_stat': float(res.get('final_loglik', 0.0)),
+            'T_r_burn': int(res.get('T_r_burn', 0)),
+            'T_d_burn': int(res.get('T_d_burn', 0)),
+            'T_r_main': int(res.get('T_r_main', 0)),
+            'T_d_main': int(res.get('T_d_main', 0)),
+            'final_phase': int(res.get('final_phase', 0)),
+            'final_loglik': float(res.get('final_loglik', 0.0)),
+            'mle_success': bool(res.get('mle_success', False)),
+            'mle_status': int(res.get('mle_status', 0)),
+            'design_solver_status': str(res.get('design_solver_status', '')),
+            'identifiable_ratio': float(res.get('identifiable_ratio', 0.0)),
+            'p_D': float(p_d),
             'elapsed_sec': time.time() - start_ts,
         }
         return out
@@ -153,27 +165,35 @@ def worker_run(spec: RunSpec, design_solver=None, debug_cap_n_m=None, verbose=Fa
         tb = traceback.format_exc()
         # include traceback in error_message for diagnostics
         err_out = {
-            'case': spec.case_name,
+            'case_name': spec.case_name,
             'regime': spec.regime,
             'delta': spec.delta,
-            'seed_id': spec.seed_id,
+            'seed': spec.seed_id,
+            'instance_attempts': 0,
+            'K': 0,
+            'd': 0,
+            'i_star': None,
+            'i_hat': None,
             'success': False,
+            'stopped': False,
+            'stop_fail': True,
             'error': True,
             'error_type': type(e).__name__,
             'error_message': f"{str(e)}\n{tb}",
-            'best_arm_true': None,
-            'best_arm_hat': None,
             'T_r': 0,
             'T_d': 0,
             'T_total': 0,
-            'num_phases': 0,
-            'T_burn_r': 0,
-            'T_burn_d': 0,
-            'T_main_r': 0,
-            'T_main_d': 0,
+            'T_r_burn': 0,
+            'T_d_burn': 0,
+            'T_r_main': 0,
+            'T_d_main': 0,
+            'final_phase': 0,
+            'final_loglik': 0.0,
+            'mle_success': False,
+            'mle_status': 0,
+            'design_solver_status': '',
+            'identifiable_ratio': 0.0,
             'p_D': 0.0,
-            'final_gap_hat': 0.0,
-            'stop_stat': 0.0,
             'elapsed_sec': time.time() - start_ts,
         }
         # emit run_error
@@ -230,7 +250,7 @@ def run(seeds=20, outdir='outputs/fusion_pilot_smoke', num_workers=None, chunksi
         existing = pd.read_csv(out_raw)
         for _, r in existing.iterrows():
             if not r.get('error', False):
-                completed_keys.add((r['case'], r['regime'], float(r['delta']), int(r['seed_id'])))
+                completed_keys.add((r['case_name'], r['regime'], float(r['delta']), int(r['seed'])))
     if overwrite and os.path.exists(out_raw):
         os.remove(out_raw)
     # prepare executor
@@ -340,7 +360,7 @@ def run(seeds=20, outdir='outputs/fusion_pilot_smoke', num_workers=None, chunksi
             existing = pd.read_csv(out_raw)
             for _, r in existing.iterrows():
                 if not r.get('error', False):
-                    completed_keys.add((r['case'], r['regime'], float(r['delta']), int(r['seed_id'])))
+                    completed_keys.add((r['case_name'], r['regime'], float(r['delta']), int(r['seed'])))
         for spec in run_specs:
             key = (spec.case_name, spec.regime, spec.delta, spec.seed_id)
             if key in completed_keys:
@@ -351,7 +371,7 @@ def run(seeds=20, outdir='outputs/fusion_pilot_smoke', num_workers=None, chunksi
         worker_args = [(spec, design_solver, debug_cap_n_m, debug) for spec in run_specs_to_execute]
         for res in pool.imap_unordered(worker_run_star, worker_args, chunksize):
             # skip completed keys if res corresponds to already completed
-            key = (res.get('case'), res.get('regime'), float(res.get('delta') or 0.0), int(res.get('seed_id') or 0))
+            key = (res.get('case_name'), res.get('regime'), float(res.get('delta') or 0.0), int(res.get('seed') or 0))
             if key in completed_keys:
                 pbar.update(1)
                 continue
@@ -360,7 +380,7 @@ def run(seeds=20, outdir='outputs/fusion_pilot_smoke', num_workers=None, chunksi
                 # also emit run_end or run_error events
                 if _PROGRESS_QUEUE is not None:
                     try:
-                        ev = {'timestamp': time.time(), 'event': 'run_end' if not res.get('error') else 'run_error', 'case': res.get('case'), 'regime': res.get('regime'), 'delta': res.get('delta'), 'seed_id': res.get('seed_id'), 'worker_pid': os.getpid(), 'elapsed_sec': res.get('elapsed_sec', 0.0)}
+                        ev = {'timestamp': time.time(), 'event': 'run_end' if not res.get('error') else 'run_error', 'case': res.get('case_name'), 'regime': res.get('regime'), 'delta': res.get('delta'), 'seed_id': res.get('seed'), 'worker_pid': os.getpid(), 'elapsed_sec': res.get('elapsed_sec', 0.0)}
                         progress_queue.put_nowait(ev)
                     except Exception:
                         pass
@@ -368,7 +388,7 @@ def run(seeds=20, outdir='outputs/fusion_pilot_smoke', num_workers=None, chunksi
                 buffer.append(res)
                 if _PROGRESS_QUEUE is not None:
                     try:
-                        ev = {'timestamp': time.time(), 'event': 'run_end', 'case': res.get('case'), 'regime': res.get('regime'), 'delta': res.get('delta'), 'seed_id': res.get('seed_id'), 'worker_pid': os.getpid(), 'elapsed_sec': res.get('elapsed_sec', 0.0)}
+                        ev = {'timestamp': time.time(), 'event': 'run_end', 'case': res.get('case_name'), 'regime': res.get('regime'), 'delta': res.get('delta'), 'seed_id': res.get('seed'), 'worker_pid': os.getpid(), 'elapsed_sec': res.get('elapsed_sec', 0.0)}
                         progress_queue.put_nowait(ev)
                     except Exception:
                         pass

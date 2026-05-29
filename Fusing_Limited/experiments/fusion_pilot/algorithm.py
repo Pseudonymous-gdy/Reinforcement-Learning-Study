@@ -109,21 +109,20 @@ def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None, pro
 
     theta_hat = np.zeros(d)
     mle_status = None
+    mle_success = False
     final_phase = 0
     m = 1
+    i_hat = int(np.argmax(X @ theta_hat))
 
     # precompute Y_id function (depends on span of X_mix which changes with theta_hat)
     def compute_identifiable_targets(action_vs_local, theta_local):
-        # build basis from X_mix (reward vectors and sqrt-weighted duel vectors)
+        # build basis from X_mix (reward vectors and raw duel vectors)
         V = []
         for t, v in zip(action_types, action_vs_local):
             if t == 'R':
                 V.append(v)
             else:
-                # weight using current theta_local
-                u = float(v @ theta_local)
-                w = sigmoid(u) * (1.0 - sigmoid(u))
-                V.append(np.sqrt(max(w, 0.0)) * v)
+                V.append(v)
         V = np.vstack(V) if len(V) > 0 else np.zeros((0, d))
         if V.shape[0] == 0:
             return []
@@ -151,6 +150,7 @@ def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None, pro
         theta_hat, success, status, obj = fit_joint_mle(mle_input, d, theta_init=theta_hat, ridge=ridge_lambda)
         mle_time_sec = time.time() - t0
         mle_status = status
+        mle_success = bool(success)
 
         # compute identifiable targets under current theta_hat
         Y_id = compute_identifiable_targets(action_vs, theta_hat)
@@ -168,16 +168,8 @@ def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None, pro
         Bpinv = np.linalg.pinv(B, rcond=1e-10)
         # compute L_m (over X_mix) and T_m (over Y_id)
         L = 0.0
-        # X_mix uses sqrt-weighted for duels
-        X_mix = []
+        # X_mix uses raw duel vectors
         for t, v in zip(action_types, action_vs):
-            if t == 'R':
-                X_mix.append(v)
-            else:
-                u = float(v @ theta_hat)
-                w = sigmoid(u) * (1.0 - sigmoid(u))
-                X_mix.append(np.sqrt(max(w, 0.0)) * v)
-        for v in X_mix:
             L = max(L, float(v @ (Bpinv @ v)))
         T = 0.0
         for y in Y_id:
@@ -201,6 +193,7 @@ def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None, pro
         # rounding -> get counts only
         q_arr = np.asarray(q_m, dtype=float)
         n_a = deterministic_round(n_m, q_arr, rng=rng, return_seq=False)
+        rounding_l1 = float(np.sum(np.abs(n_a / max(1, n_m) - q_arr)))
 
         # batch sampling per action
         t2 = time.time()
@@ -226,6 +219,7 @@ def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None, pro
         t3 = time.time()
         mle_input = {'action_vs': action_vs, 'action_types': action_types, 'N_a': N_a, 'S_a': S_a}
         theta_hat, success, status, obj = fit_joint_mle(mle_input, d, theta_init=theta_hat, ridge=ridge_lambda)
+        mle_success = bool(success)
 
         # compute empirical Fisher H using current theta_hat
         H = np.zeros((d, d))
@@ -292,6 +286,7 @@ def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None, pro
                     'rank_H': rank_H,
                     'min_eig_H': min_eig_H,
                     'cond_H': cond_H,
+                    'rounding_l1': rounding_l1,
                     'i_hat': i_hat,
                     'min_empirical_gap_to_i_hat': float(min_gap_hat),
                     'max_conf_radius_to_i_hat': float(max_radius),
@@ -323,6 +318,8 @@ def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None, pro
         error=False,
         error_type="",
         error_message="",
+        stopped=True,
+        stop_fail=False,
         T_r=int(T_r),
         T_d=int(T_d),
         T_total=int(T_r + T_d),
@@ -332,6 +329,7 @@ def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None, pro
         T_d_main=int(T_d_main),
         final_phase=final_phase,
         final_loglik=float(obj),
+        mle_success=mle_success,
         mle_status=mle_status,
         design_solver_status=design_status,
         identifiable_ratio=identifiable_ratio if Ys.shape[0] > 0 else 0.0,

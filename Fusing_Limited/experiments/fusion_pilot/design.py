@@ -87,7 +87,7 @@ def design_objective_and_stats(q, actions, X, theta_hat, Y_id, bar_x_m, eps_m, C
 
     Bpinv = np.linalg.pinv(B, rcond=rcond)
 
-    # build X_mix: reward vectors and sqrt-weighted duel vectors
+    # build X_mix: reward vectors and raw duel vectors
     X_mix = []
     for a in actions:
         if a[0] == 'R':
@@ -96,8 +96,7 @@ def design_objective_and_stats(q, actions, X, theta_hat, Y_id, bar_x_m, eps_m, C
         else:
             _, i, j = a
             v = X[i] - X[j]
-            _, _, w = fisher_increment(a, X, theta_hat)
-            X_mix.append(np.sqrt(max(w, 0.0)) * v)
+            X_mix.append(v)
 
     # compute L_m(q)
     L = 0.0
@@ -149,14 +148,18 @@ def solve_design(actions, X, theta_hat, Y_id, bar_x_m, eps_m, zeta, C_safe, solv
         cons = ({'type': 'eq', 'fun': lambda qvar: np.sum(qvar) - 1.0},)
         bounds = [(0.0, 1.0) for _ in range(n)]
         res = minimize(obj, q, bounds=bounds, constraints=cons, method='SLSQP', options={'maxiter': 200})
-        q_opt = np.maximum(res.x, 0.0)
-        if np.sum(q_opt) <= 0:
-            q_opt = np.ones(n, dtype=float) / n
-        else:
-            q_opt = q_opt / np.sum(q_opt)
-        qo = q_opt.tolist()
-        status = 'slsqp' + (':ok' if res.success else ':fail')
-        return qo, status
+        if res.success:
+            q_opt = np.maximum(res.x, 0.0)
+            if np.sum(q_opt) <= 0:
+                q_opt = np.ones(n, dtype=float) / n
+            else:
+                q_opt = q_opt / np.sum(q_opt)
+            qo = q_opt.tolist()
+            status = 'slsqp:ok'
+            return qo, status
+        # fallback to greedy-fw if SLSQP fails
+        q_fallback, status_fb = solve_design(actions, X, theta_hat, Y_id, bar_x_m, eps_m, zeta, C_safe, solver='greedy-fw', previous_q=q, max_iters=max_iters)
+        return q_fallback, f'slsqp:fail->{status_fb}'
 
     # default greedy-FW style solver
     best_q = q.copy()
@@ -169,7 +172,7 @@ def solve_design(actions, X, theta_hat, Y_id, bar_x_m, eps_m, zeta, C_safe, solv
         worst_val = -np.inf
         worst_vec = None
 
-        # X_mix uses reward vectors and sqrt-weighted duel vectors
+        # X_mix uses reward vectors and raw duel vectors
         for a in actions:
             if a[0] == 'R':
                 _, i = a
@@ -181,12 +184,10 @@ def solve_design(actions, X, theta_hat, Y_id, bar_x_m, eps_m, zeta, C_safe, solv
             else:
                 _, i, j = a
                 v = X[i] - X[j]
-                _, _, w = fisher_increment(a, X, theta_hat)
-                v_eff = np.sqrt(max(w, 0.0)) * v
-                val = C_safe * bar_x_m * float(v_eff @ (Bpinv @ v_eff))
+                val = C_safe * bar_x_m * float(v @ (Bpinv @ v))
                 if val > worst_val:
                     worst_val = val
-                    worst_vec = v_eff
+                    worst_vec = v
 
         # Y_id for target term
         for y in Y_id:
