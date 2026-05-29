@@ -15,21 +15,19 @@ def make_unit_instance():
 
 def make_special_instance():
     d = 10
-    e1 = np.zeros(d); e1[0] = 1.0
-    e2 = np.zeros(d); e2[1] = 1.0
-    e3 = np.zeros(d); e3[2] = 1.0
+    # Build standard basis e_1,...,e_d
+    basis = np.eye(d)
+    # two additional near-duplicates in the span of e1,e2 and e1,e3
+    e1 = basis[0]
+    e2 = basis[1]
+    e3 = basis[2]
     x_d1 = np.cos(0.55) * e1 + np.sin(0.55) * e2
     x_d2 = np.cos(0.65) * e1 + np.sin(0.65) * e3
-    X = np.vstack([e1, e2, e3, np.zeros((d-3, d))])
-    # Fill remaining rows as standard basis for simplicity
-    for i in range(3, d):
-        X[i, i] = 1.0
-    # replace second and third arms with rotated ones
-    X[1] = x_d1
-    X[2] = x_d2
+    # stack basis and two additional arms
+    X = np.vstack([basis, x_d1, x_d2])
     theta = np.zeros(d); theta[0] = 1.0
     i_star = int(np.argmax(X @ theta))
-    return X, theta, i_star, {"K": d+2 if False else d, "d": d}
+    return X, theta, i_star, {"K": d + 2, "d": d}
 
 
 def make_general_instance(seed, K=20, d=5, rng=None, max_attempts=10000):

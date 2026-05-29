@@ -3,7 +3,7 @@ import time
 from .instances import make_unit_instance, make_special_instance, make_general_instance
 from .feedback import sample_reward, sample_duel, sigmoid
 from .mle import fit_joint_mle
-from .design import actions_from_X, compute_Jm, solve_design, B_from_q
+from .design import actions_from_X, compute_Jm, solve_design, B_from_q, design_objective_and_stats, fisher_increment
 from .rounding import deterministic_round
 from .config import burnin_repeats, ridge_lambda, projection_tol, zeta, C_safe
 
@@ -26,42 +26,54 @@ def build_action_directions(X, regime):
 
 
 def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None, progress_emitter=None):
-    rng = np.random.RandomState(seed)
+    """
+    Phased joint-MLE mixed-XY BAI algorithm (strict implementation).
+    """
+    rng = np.random.default_rng(seed)
     K, d = X.shape[0], X.shape[1]
-    actions, V = build_action_directions(X, regime)
-    # determine Y_id: all differences x_i - x_j projected to span(V)
+
+    # config options
+    design_solver = None
+    debug_cap_n_m = None
+    verbose = False
+    if isinstance(config, dict):
+        design_solver = config.get('design_solver', None)
+        debug_cap_n_m = config.get('debug_cap_n_m', None)
+        verbose = bool(config.get('verbose', False))
+
+    # build actions and measurement vectors
+    actions = actions_from_X(X, regime)
+    n_actions = len(actions)
+    action_vs = np.zeros((n_actions, d))
+    action_types = []
+    for idx, a in enumerate(actions):
+        if a[0] == 'R':
+            action_vs[idx] = X[a[1]]
+            action_types.append('R')
+        else:
+            action_vs[idx] = X[a[1]] - X[a[2]]
+            action_types.append('D')
+
+    # build all pairwise differences Y (for identifiability and targets)
     Ys = []
     for i in range(K):
         for j in range(K):
-            if i == j: continue
-            y = X[i] - X[j]
-            Ys.append(y)
+            if i == j:
+                continue
+            Ys.append(X[i] - X[j])
     Ys = np.vstack(Ys)
-    # identify those in span(V)
-    if V.shape[0] == 0:
-        Y_id = []
-    else:
-        U, s, _ = np.linalg.svd(V.T, full_matrices=False)
-        rank = np.sum(s > projection_tol)
-        basis = U[:, :rank]
-        proj = basis @ (basis.T @ Ys.T)
-        resid = Ys.T - proj
-        norms = np.linalg.norm(resid, axis=0)
-        Y_id = [Ys[i] for i in range(Ys.shape[0]) if norms[i] <= projection_tol]
-    identifiable_ratio = len(Y_id) / max(1, Ys.shape[0])
 
-    # burn-in: pick actions that increase rank
-    observations = []
-    selected_dirs = []
+    # sufficient statistics per action
+    N_a = np.zeros(n_actions, dtype=float)
+    S_a = np.zeros(n_actions, dtype=float)
+
+    # burn-in: select up to d actions that expand span
+    selected_idx = []
     dir_mat = np.zeros((0, d))
-    for a_idx, a in enumerate(actions):
-        if len(selected_dirs) >= d:
+    for idx in range(n_actions):
+        if len(selected_idx) >= d:
             break
-        if a[0] == 'R':
-            v = X[a[1]]
-        else:
-            v = X[a[1]] - X[a[2]]
-        # check if adds to rank
+        v = action_vs[idx]
         if dir_mat.shape[0] == 0:
             add = True
         else:
@@ -72,18 +84,23 @@ def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None, pro
                 add = False
         if add:
             dir_mat = np.vstack([dir_mat, v]) if dir_mat.shape[0] > 0 else v.reshape(1, -1)
-            selected_dirs.append(a)
+            selected_idx.append(idx)
+
     T_r_burn = 0
     T_d_burn = 0
-    for a in selected_dirs:
+    for idx in selected_idx:
         for _ in range(burnin_repeats):
-            if a[0] == 'R':
-                y = sample_reward(a[1], X, theta_star, rng)
-                observations.append({'rho': 'R', 'v': X[a[1]], 'y': y})
+            if action_types[idx] == 'R':
+                mean = float(action_vs[idx] @ theta_star)
+                y = rng.normal(loc=mean)
+                S_a[idx] += float(y)
+                N_a[idx] += 1.0
                 T_r_burn += 1
             else:
-                y = sample_duel(a[1], a[2], X, theta_star, rng)
-                observations.append({'rho': 'D', 'v': X[a[1]] - X[a[2]], 'y': y})
+                p = sigmoid(float(action_vs[idx] @ theta_star))
+                y = rng.binomial(1, p)
+                S_a[idx] += float(y)
+                N_a[idx] += 1.0
                 T_d_burn += 1
 
     total_samples = T_r_burn + T_d_burn
@@ -94,150 +111,205 @@ def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None, pro
     mle_status = None
     final_phase = 0
     m = 1
-    # Fixed-confidence loop: run until the stopping rule is satisfied
+
+    # precompute Y_id function (depends on span of X_mix which changes with theta_hat)
+    def compute_identifiable_targets(action_vs_local, theta_local):
+        # build basis from X_mix (reward vectors and sqrt-weighted duel vectors)
+        V = []
+        for t, v in zip(action_types, action_vs_local):
+            if t == 'R':
+                V.append(v)
+            else:
+                # weight using current theta_local
+                u = float(v @ theta_local)
+                w = sigmoid(u) * (1.0 - sigmoid(u))
+                V.append(np.sqrt(max(w, 0.0)) * v)
+        V = np.vstack(V) if len(V) > 0 else np.zeros((0, d))
+        if V.shape[0] == 0:
+            return []
+        U, s, _ = np.linalg.svd(V.T, full_matrices=False)
+        rank = int(np.sum(s > projection_tol))
+        if rank == 0:
+            return []
+        basis = U[:, :rank]
+        proj = basis @ (basis.T @ Ys.T)
+        resid = Ys.T - proj
+        norms = np.linalg.norm(resid, axis=0)
+        Y_id = [Ys[i] for i in range(Ys.shape[0]) if norms[i] <= projection_tol]
+        return Y_id
+
+    # Fixed-confidence loop
     while True:
         # phase params
         delta_m = 6 * delta / (np.pi ** 2 * m ** 2)
         bar_x_m = d * np.log(5) + np.log((np.pi ** 2 * m ** 2) / (3 * delta))
-        eps_m = 1.0 / np.sqrt(m + 3)
-        eps_m = max(eps_m, 1e-6)
+        eps_m = 2.0 ** (-m)
 
-        # fit MLE
-        theta_hat, success, status, obj = fit_joint_mle(observations, d, theta_init=theta_hat, ridge=ridge_lambda)
+        # fit MLE from sufficient stats
+        t0 = time.time()
+        mle_input = {'action_vs': action_vs, 'action_types': action_types, 'N_a': N_a, 'S_a': S_a}
+        theta_hat, success, status, obj = fit_joint_mle(mle_input, d, theta_init=theta_hat, ridge=ridge_lambda)
+        mle_time_sec = time.time() - t0
         mle_status = status
 
-        # design
-        q_m, design_status = solve_design(actions, X, theta_hat, Y_id, bar_x_m, eps_m, zeta, C_safe)
+        # compute identifiable targets under current theta_hat
+        Y_id = compute_identifiable_targets(action_vs, theta_hat)
+        identifiable_ratio = len(Y_id) / max(1, Ys.shape[0])
+
+        # design solver
+        t1 = time.time()
+        q_m, design_status = solve_design(actions, X, theta_hat, Y_id, bar_x_m, eps_m, zeta, C_safe, solver=(design_solver or 'greedy-fw'))
+        design_time_sec = time.time() - t1
         if len(q_m) == 0:
             break
-        # phase size
-        # approximate L and T
-        L, T = 0.0, 0.0
+
+        # compute B and diagnostics
         B = B_from_q(actions, X, theta_hat, q_m)
-        Bpinv = np.linalg.pinv(B, rcond=1e-8)
-        for a in actions:
-            _, v = compute_Jm(a, X, theta_hat)
+        Bpinv = np.linalg.pinv(B, rcond=1e-10)
+        # compute L_m (over X_mix) and T_m (over Y_id)
+        L = 0.0
+        # X_mix uses sqrt-weighted for duels
+        X_mix = []
+        for t, v in zip(action_types, action_vs):
+            if t == 'R':
+                X_mix.append(v)
+            else:
+                u = float(v @ theta_hat)
+                w = sigmoid(u) * (1.0 - sigmoid(u))
+                X_mix.append(np.sqrt(max(w, 0.0)) * v)
+        for v in X_mix:
             L = max(L, float(v @ (Bpinv @ v)))
+        T = 0.0
         for y in Y_id:
             T = max(T, float(y @ (Bpinv @ y)))
-        if d is None:
-            raise RuntimeError
+
         r_zeta = d ** 2
-        # compute candidate phase size components
-        cand1 = r_zeta
-        cand2 = (1 + zeta) * C_safe * bar_x_m * L
-        # avoid dividing by exact zero eps_m although eps_m formula is preserved
-        denom = (eps_m ** 2)
-        cand3 = (1 + zeta) * 128 * np.e ** 3 * bar_x_m * T / denom if denom != 0 else np.inf
-        raw_nm = max(cand1, cand2, cand3)
-        # numeric guards: if raw_nm is not finite or extremely large, cap to a safe maximum
-        MAX_NM = 50000
-        if not np.isfinite(raw_nm):
-            n_m = int(MAX_NM)
-            capped = True
-        else:
-            if raw_nm > MAX_NM:
-                n_m = int(MAX_NM)
-                capped = True
+        raw_nm = max(r_zeta, (1 + zeta) * C_safe * bar_x_m * L, (1 + zeta) * 128 * np.e ** 3 * bar_x_m * T / (eps_m ** 2))
+
+        # debug cap only if provided in config
+        if debug_cap_n_m is not None:
+            if not np.isfinite(raw_nm):
+                n_m = int(debug_cap_n_m)
             else:
-                n_m = int(np.ceil(raw_nm))
-                capped = False
+                n_m = int(min(np.ceil(raw_nm), debug_cap_n_m))
+        else:
+            if not np.isfinite(raw_nm):
+                # propagate error instead of capping silently
+                raise RuntimeError(f"Non-finite phase size raw_nm={raw_nm}")
+            n_m = int(np.ceil(raw_nm))
 
-        if capped:
-            print(f"Warning: n_m capped to {n_m} (raw={raw_nm}) to avoid excessive allocation")
-
-        # deterministic rounding by counts (avoid building huge seq in memory)
+        # rounding -> get counts only
         q_arr = np.asarray(q_m, dtype=float)
-        tilde = n_m * q_arr
-        n_a = np.floor(tilde).astype(int)
-        rem = int(n_m - np.sum(n_a))
-        if rem > 0:
-            frac = tilde - np.floor(tilde)
-            idx = np.argsort(-frac)
-            for k in range(min(rem, len(idx))):
-                n_a[idx[k]] += 1
-        seq = None
-        # execute by action counts (batch sampling)
+        n_a = deterministic_round(n_m, q_arr, rng=rng, return_seq=False)
+
+        # batch sampling per action
+        t2 = time.time()
         for a_idx, count in enumerate(n_a):
             if count <= 0:
                 continue
-            a = actions[a_idx]
-            if a[0] == 'R':
-                ys = rng.normal(loc=(X[a[1]] @ theta_star), scale=1.0, size=count)
-                # extend observations in batch
-                observations.extend([{'rho': 'R', 'v': X[a[1]], 'y': float(y)} for y in ys])
+            v = action_vs[a_idx]
+            if action_types[a_idx] == 'R':
+                ys = rng.normal(loc=float(v @ theta_star), scale=1.0, size=int(count))
+                S_a[a_idx] += float(np.sum(ys))
+                N_a[a_idx] += float(count)
                 T_r_main += int(count)
             else:
-                # duel sampling: binomial wins
-                p = 1.0 / (1.0 + np.exp(-float((X[a[1]] - X[a[2]]) @ theta_star)))
-                wins = rng.binomial(n=int(count), p=p)
-                # store duel observations as wins/individuals
-                # approximate by appending wins times success and failures
-                if wins > 0:
-                    observations.extend([{'rho': 'D', 'v': X[a[1]] - X[a[2]], 'y': 1.0}] * int(wins))
-                if count - wins > 0:
-                    observations.extend([{'rho': 'D', 'v': X[a[1]] - X[a[2]], 'y': 0.0}] * int(count - wins))
+                p = sigmoid(float(v @ theta_star))
+                wins = int(rng.binomial(n=int(count), p=p))
+                S_a[a_idx] += float(wins)
+                N_a[a_idx] += float(count)
                 T_d_main += int(count)
             total_samples += int(count)
+        sampling_time_sec = time.time() - t2
 
-        # stopping check
-        theta_hat, success, status, obj = fit_joint_mle(observations, d, theta_init=theta_hat, ridge=ridge_lambda)
-        # emit phase_end event if emitter provided
-        if progress_emitter is not None:
-            try:
-                evt = {
-                    'timestamp': time.time(),
-                    'event': 'phase_end',
-                    'case': None,
-                    'regime': regime,
-                    'delta': delta,
-                    'seed_id': seed,
-                    'phase': m,
-                    'T_r': T_r_burn + T_r_main,
-                    'T_d': T_d_burn + T_d_main,
-                    'T_total': T_r_burn + T_r_main + T_d_burn + T_d_main,
-                    'n_m': n_m,
-                    'epsilon_m': eps_m,
-                    'bar_x_m': bar_x_m,
-                    'q_reward_mass': float(np.sum([q for (q, a) in zip(q_m, actions) if a[0] == 'R'])) if len(q_m)>0 else 0.0,
-                    'q_duel_mass': float(np.sum([q for (q, a) in zip(q_m, actions) if a[0] == 'D'])) if len(q_m)>0 else 0.0,
-                    'p_D_so_far': (T_d_burn + T_d_main) / max(1, (T_r_burn + T_r_main + T_d_burn + T_d_main)),
-                    'mle_time_sec': 0.0,
-                    'design_time_sec': 0.0,
-                    'sampling_time_sec': 0.0,
-                    'stopping_time_sec': 0.0,
-                    'stop_stat': obj,
-                    'best_arm_hat': int(np.argmax(X @ theta_hat)),
-                    'elapsed_sec': 0.0,
-                }
-                progress_emitter(evt)
-            except Exception:
-                pass
-        # empirical fisher
+        # fit MLE again after sampling and evaluate stopping
+        t3 = time.time()
+        mle_input = {'action_vs': action_vs, 'action_types': action_types, 'N_a': N_a, 'S_a': S_a}
+        theta_hat, success, status, obj = fit_joint_mle(mle_input, d, theta_init=theta_hat, ridge=ridge_lambda)
+
+        # compute empirical Fisher H using current theta_hat
         H = np.zeros((d, d))
-        for obs in observations:
-            v = obs['v']
-            if obs['rho'] == 'R':
-                H += np.outer(v, v)
-            else:
-                u = float(v @ theta_hat)
-                w = sigmoid(u) * (1 - sigmoid(u))
-                H += w * np.outer(v, v)
-        Hpinv = np.linalg.pinv(H, rcond=1e-8)
+        for idx, a in enumerate(actions):
+            J, _, _ = compute_Jm(a, X, theta_hat)
+            H += N_a[idx] * J
+        Hpinv = np.linalg.pinv(H, rcond=1e-10)
+
+        # stopping rule
         scores = X @ theta_hat
         i_hat = int(np.argmax(scores))
         beta_hat = 4 * np.e ** (3 / 2) * np.sqrt(2 * bar_x_m)
         ok = True
+        min_gap_hat = float('inf')
+        max_radius = 0.0
         for j in range(K):
-            if j == i_hat: continue
+            if j == i_hat:
+                continue
             y = X[i_hat] - X[j]
             lhs = float(y @ theta_hat)
             rhs = beta_hat * np.sqrt(float(y @ (Hpinv @ y)))
+            min_gap_hat = min(min_gap_hat, lhs)
+            max_radius = max(max_radius, rhs)
             if lhs <= rhs:
                 ok = False
-                break
         final_phase = m
-        print(f"Phase {m} finished: total_samples={total_samples}, n_m={n_m}, design_status={design_status}, mle_status={mle_status}")
+        stopping_time_sec = time.time() - t3
+
+        # emit diagnostics
+        if progress_emitter is not None:
+            try:
+                # B diagnostics
+                eigs_B = np.linalg.eigvalsh(B)
+                min_eig_B = float(np.min(eigs_B))
+                cond_B = float(np.max(eigs_B) / max(min_eig_B, 1e-30))
+                rank_B = int(np.sum(eigs_B > 1e-12))
+
+                eigs_H = np.linalg.eigvalsh(H)
+                min_eig_H = float(np.min(eigs_H))
+                cond_H = float(np.max(eigs_H) / max(min_eig_H, 1e-30))
+                rank_H = int(np.sum(eigs_H > 1e-12))
+
+                obj_design = max((1 + zeta) * C_safe * bar_x_m * L, (1 + zeta) * 128 * np.e ** 3 * bar_x_m * T / (eps_m ** 2))
+
+                evt = {
+                    'timestamp': time.time(),
+                    'event': 'phase_end',
+                    'phase': m,
+                    'epsilon_m': eps_m,
+                    'delta_m': delta_m,
+                    'bar_x_m': bar_x_m,
+                    'n_m': n_m,
+                    'T_r': int(T_r_burn + T_r_main),
+                    'T_d': int(T_d_burn + T_d_main),
+                    'T_total': int(T_r_burn + T_r_main + T_d_burn + T_d_main),
+                    'q_reward_mass': float(np.sum([q for (q, a) in zip(q_m, actions) if a[0] == 'R'])) if len(q_m) > 0 else 0.0,
+                    'q_duel_mass': float(np.sum([q for (q, a) in zip(q_m, actions) if a[0] == 'D'])) if len(q_m) > 0 else 0.0,
+                    'L_m': float(L),
+                    'T_m': float(T),
+                    'design_objective': float(obj_design),
+                    'rank_B': rank_B,
+                    'min_eig_B': min_eig_B,
+                    'cond_B': cond_B,
+                    'rank_H': rank_H,
+                    'min_eig_H': min_eig_H,
+                    'cond_H': cond_H,
+                    'i_hat': i_hat,
+                    'min_empirical_gap_to_i_hat': float(min_gap_hat),
+                    'max_conf_radius_to_i_hat': float(max_radius),
+                    'stop_ratio': float(max_radius / max(min_gap_hat, 1e-12)),
+                    'mle_status': mle_status,
+                    'design_status': design_status,
+                    'mle_time_sec': float(mle_time_sec),
+                    'design_time_sec': float(design_time_sec),
+                    'sampling_time_sec': float(sampling_time_sec),
+                    'stopping_time_sec': float(stopping_time_sec),
+                }
+                progress_emitter(evt)
+            except Exception:
+                pass
+
+        if verbose:
+            print(f"Phase {m} finished: total_samples={total_samples}, n_m={n_m}, design_status={design_status}, mle_status={mle_status}")
+
         if ok:
             break
         m += 1
@@ -251,18 +323,18 @@ def run_phased_mixed_xy_bai(X, theta_star, delta, regime, seed, config=None, pro
         error=False,
         error_type="",
         error_message="",
-        T_r=T_r,
-        T_d=T_d,
-        T_total=T_r + T_d,
-        T_r_burn=T_r_burn,
-        T_d_burn=T_d_burn,
-        T_r_main=T_r_main,
-        T_d_main=T_d_main,
+        T_r=int(T_r),
+        T_d=int(T_d),
+        T_total=int(T_r + T_d),
+        T_r_burn=int(T_r_burn),
+        T_d_burn=int(T_d_burn),
+        T_r_main=int(T_r_main),
+        T_d_main=int(T_d_main),
         final_phase=final_phase,
-        final_loglik=obj,
+        final_loglik=float(obj),
         mle_status=mle_status,
         design_solver_status=design_status,
-        identifiable_ratio=identifiable_ratio,
+        identifiable_ratio=identifiable_ratio if Ys.shape[0] > 0 else 0.0,
         p_D=(T_d / max(1, T_r + T_d)) if (T_r + T_d) > 0 else 0.0,
     )
     return result

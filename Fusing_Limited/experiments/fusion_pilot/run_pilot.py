@@ -71,7 +71,7 @@ def generate_instance(case_name, seed_id, base_seed=20260601):
     return X, theta, i_star, meta
 
 
-def worker_run(spec: RunSpec):
+def worker_run(spec: RunSpec, design_solver=None, debug_cap_n_m=None, verbose=False):
     try:
         # emit run_start event
         start_ts = time.time()
@@ -96,8 +96,7 @@ def worker_run(spec: RunSpec):
         # create a deterministic run seed that depends on regime and delta
         run_seed = stable_int_seed(base, spec.case_name, spec.regime, spec.delta, spec.seed_id, 'run')
 
-        regime_map = {'reward-only': 'reward_only', 'duel-only': 'duel_only', 'fusion': 'fusion'}
-        alg_regime = regime_map.get(spec.regime, spec.regime)
+        alg_regime = spec.regime
 
         # prepare progress_emitter for algorithm phases
         def _emit(ev):
@@ -116,7 +115,12 @@ def worker_run(spec: RunSpec):
                 pass
 
         # call the algorithm (it internally uses the provided seed for RNG)
-        res = run_phased_mixed_xy_bai(X, theta, spec.delta, alg_regime, run_seed, config=None, progress_emitter=_emit)
+        config = {
+            'design_solver': design_solver,
+            'debug_cap_n_m': debug_cap_n_m,
+            'verbose': verbose,
+        }
+        res = run_phased_mixed_xy_bai(X, theta, spec.delta, alg_regime, run_seed, config=config, progress_emitter=_emit)
 
         out = {
             'case': spec.case_name,
@@ -192,7 +196,11 @@ def worker_run(spec: RunSpec):
         return err_out
 
 
-def run(seeds=20, outdir='outputs/fusion_pilot_smoke', num_workers=None, chunksize=1, write_every=100, resume=False, overwrite=False, debug=False):
+def worker_run_star(args):
+    return worker_run(*args)
+
+
+def run(seeds=20, outdir='outputs/fusion_pilot_smoke', num_workers=None, chunksize=1, write_every=100, resume=False, overwrite=False, debug=False, design_solver='greedy-fw', debug_cap_n_m=None):
     ensure_out(outdir)
     cases = ['unit', 'special', 'general']
     regimes = ['reward-only', 'duel-only', 'fusion']
@@ -340,7 +348,8 @@ def run(seeds=20, outdir='outputs/fusion_pilot_smoke', num_workers=None, chunksi
                 continue
             run_specs_to_execute.append(spec)
 
-        for res in pool.imap_unordered(worker_run, run_specs_to_execute, chunksize):
+        worker_args = [(spec, design_solver, debug_cap_n_m, debug) for spec in run_specs_to_execute]
+        for res in pool.imap_unordered(worker_run_star, worker_args, chunksize):
             # skip completed keys if res corresponds to already completed
             key = (res.get('case'), res.get('regime'), float(res.get('delta') or 0.0), int(res.get('seed_id') or 0))
             if key in completed_keys:
@@ -410,5 +419,7 @@ if __name__ == '__main__':
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--overwrite', action='store_true')
     parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--design-solver', type=str, default='greedy-fw', choices=['greedy-fw', 'slsqp'])
+    parser.add_argument('--debug-cap-nm', type=int, default=None)
     args = parser.parse_args()
-    run(seeds=args.seeds, outdir=args.out, num_workers=args.num_workers, chunksize=args.chunksize, write_every=args.write_every, resume=args.resume, overwrite=args.overwrite, debug=args.debug)
+    run(seeds=args.seeds, outdir=args.out, num_workers=args.num_workers, chunksize=args.chunksize, write_every=args.write_every, resume=args.resume, overwrite=args.overwrite, debug=args.debug, design_solver=args.design_solver, debug_cap_n_m=args.debug_cap_nm)
